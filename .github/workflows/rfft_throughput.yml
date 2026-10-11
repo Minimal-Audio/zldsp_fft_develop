@@ -60,19 +60,23 @@ jobs:
         shell: bash
         run: |
           python -u benchmark/run.py throughput rfft 5 25 --standard-libraries --avx2 --double
+          python -u benchmark/run.py throughput rfft 5 25 --apis --avx2 --double
 
       - name: RFFT Throughput Test AVX2 (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           python -u benchmark/run.py throughput rfft 5 25 --standard-libraries --avx2
+          python -u benchmark/run.py throughput rfft 5 25 --apis --avx2
 
       - name: RFFT Throughput Test Double
         shell: bash
         run: |
           python -u benchmark/run.py throughput rfft 5 25 --standard-libraries --double
+          python -u benchmark/run.py throughput rfft 5 25 --apis --double
 
       - name: RFFT Throughput Test
         shell: bash
         run: |
           python -u benchmark/run.py throughput rfft 5 25 --standard-libraries
+          python -u benchmark/run.py throughput rfft 5 25 --apis

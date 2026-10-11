@@ -17,8 +17,7 @@ TIME_TO_US = {"ns": 1e-3, "us": 1.0, "ms": 1e3, "s": 1e6}
 REQUIRED_SUBMODULES = ("google/benchmark", "google/highway")
 DIRECTIONS = ("forward", "backward", "convolve", "roundtrip")
 METRICS = {
-    "throughput": (("cpu_time_us", "CPU time (us; lower is faster)", ".6g"),
-                   ("mflops", "MFLOPS (higher is faster)", ".6g")),
+    "throughput": (("mflops", "MFLOPS (higher is faster)", ".6g"),),
     "accuracy": (("relative_rmse", "Relative RMSE (lower is better)", ".3e"),
                  ("max_abs", "Maximum absolute error (lower is better)", ".3e")),
     "commit_comparison": (("current_us", "Current time (us)", ".6g"),

@@ -201,6 +201,8 @@ class ReportingTests(unittest.TestCase):
             summary = self.summary(output)
             self.assertEqual(json.loads(path.read_text())["results"], rows)
         self.assertIn("SKIP", output.getvalue())
+        self.assertNotIn("CPU time", output.getvalue())
+        self.assertEqual(set(summary["metrics"]), {"mflops"})
         self.assertEqual(summary["metrics"]["mflops"]["forward/aos_aos"]["pffft"], [None, rows[6]["mflops"]])
         self.assertEqual(summary["skipped"], [rows[2]])
 
