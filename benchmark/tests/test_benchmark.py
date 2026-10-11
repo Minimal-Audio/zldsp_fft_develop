@@ -1,16 +1,19 @@
 """Regression checks for failures that used to produce misleading benchmark reports."""
 
 import copy
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import math
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from run import case_keys, parse_accuracy, parse_throughput, summarize_pairs
-from build_config import build_benchmark
+from run import case_keys, parse_accuracy, parse_args, parse_throughput, print_tables, save_results, summarize_pairs
+from build_config import build_benchmark, get_algo_list
 
 
 def timing(direction, api, order=5, duration=1000, **extra):
@@ -125,6 +128,74 @@ class ComparisonTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     build_benchmark(algorithm, target)
             command.assert_not_called()
+
+
+class ReportingTests(unittest.TestCase):
+    def summary(self, output):
+        return json.loads(output.getvalue().split("JSON summary:\n", 1)[1])
+
+    def test_default_accuracy_summary_retains_directions_libraries_and_precision(self):
+        args = parse_args(["accuracy", "cfft", "5", "10", "--double"])
+        rows = [dict(order=order, library=library, direction=direction, api="median", status="passed",
+                     relative_rmse=(order + library_index + direction_index) * 1.234567890123456e-17,
+                     max_abs=1.234567890123456e-15)
+                for order in range(5, 11)
+                for library_index, library in enumerate(("zldsp", "kfr"))
+                for direction_index, direction in enumerate(("forward", "backward"))]
+        output = StringIO()
+        with redirect_stdout(output):
+            print_tables(args, rows)
+            save_results(args, args.kind, "accuracy", rows, threshold=args.threshold)
+        summary = self.summary(output)
+        self.assertEqual(summary["orders"], list(range(5, 11)))
+        self.assertEqual(summary["precision"], "double")
+        for metric in ("relative_rmse", "max_abs"):
+            for library in ("zldsp", "kfr"):
+                for direction in ("forward", "backward"):
+                    expected = [row[metric] for row in rows if row["library"] == library and row["direction"] == direction]
+                    self.assertEqual(summary["metrics"][metric][f"{direction}/median"][library], expected)
+
+    def test_throughput_skips_are_null_and_detailed_json_is_preserved(self):
+        rows = [dict(order=order, library=library, direction=direction, api="aos_aos", status="measured",
+                     cpu_time_us=0.1234567890123456, mflops=800.1234567890123, samples=3)
+                for order in (5, 6) for library in ("zldsp", "pffft") for direction in ("forward", "backward")]
+        rows[2] = dict(order=5, library="pffft", direction="forward", api="aos_aos", status="skipped",
+                       reason="unsupported size: test")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "results.json"
+            args = parse_args(["throughput", "cfft", "5", "6", "--json", str(path)])
+            output = StringIO()
+            with redirect_stdout(output):
+                print_tables(args, rows)
+                save_results(args, args.kind, "throughput", rows)
+            summary = self.summary(output)
+            self.assertEqual(json.loads(path.read_text())["results"], rows)
+        self.assertIn("SKIP", output.getvalue())
+        self.assertEqual(summary["metrics"]["mflops"]["forward/aos_aos"]["pffft"], [None, rows[6]["mflops"]])
+        self.assertEqual(summary["skipped"], [rows[2]])
+
+    def test_commit_summary_omits_raw_runs_but_keeps_revisions_and_ratios(self):
+        args = parse_args(["compare", "rfft", "5", "5"])
+        row = dict(order=5, direction="backward", api="aos_real", current_us=1.5, previous_us=3.0,
+                   throughput_ratio=2.0, change_percent=100.0, median_ratio=2.0, mad_percent=0.0)
+        revisions = dict(current="new", previous="old")
+        output = StringIO()
+        with redirect_stdout(output):
+            save_results(args, args.kind, "commit_comparison", [row], revisions=revisions, runs={})
+        summary = self.summary(output)
+        self.assertEqual(summary["revisions"], revisions)
+        self.assertNotIn("runs", summary)
+        self.assertEqual(summary["metrics"]["throughput_ratio"]["backward/aos_real"]["zldsp"], [2.0])
+
+    def test_standard_library_set_excludes_fftw_and_full_set_adds_it(self):
+        with patch("build_config.platform.system", return_value="Darwin"), \
+             patch("build_config.platform.machine", return_value="arm64"), \
+             patch.dict("build_config.os.environ", {}, clear=True):
+            standard = get_algo_list(full=False)
+            full = get_algo_list(full=True)
+        self.assertEqual(set(standard), {"vdsp", "kfr", "pffft", "zldsp"})
+        self.assertEqual(set(full) - set(standard), {"fftw3", "fftw3_estimate"})
+        self.assertTrue(set(standard) <= set(full))
 
 
 if __name__ == "__main__":

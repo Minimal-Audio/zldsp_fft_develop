@@ -13,9 +13,11 @@ BENCHMARKS = tuple(f"{mode}_{kind}" for mode in
                    for kind in ("cfft", "rfft"))
 
 
-def get_algo_list():
-    """List bundled and installed backends compatible with this platform."""
-    result = ["fftw3", "fftw3_estimate", "kfr", "pffft", "zldsp"]
+def get_algo_list(full=True):
+    """List available backends; the standard set excludes both FFTW plans."""
+    result = ["kfr", "pffft", "zldsp"]
+    if full:
+        result[0:0] = ["fftw3", "fftw3_estimate"]
     if platform.system() == "Darwin":
         result.insert(0, "vdsp")
     if os.environ.get("ARMPL_DIR"):

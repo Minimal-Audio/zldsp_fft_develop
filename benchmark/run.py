@@ -15,6 +15,27 @@ from build_config import ALGOS, ROOT, build_benchmark, get_algo_list, run_comman
 
 TIME_TO_US = {"ns": 1e-3, "us": 1.0, "ms": 1e3, "s": 1e6}
 REQUIRED_SUBMODULES = ("google/benchmark", "google/highway")
+DIRECTIONS = ("forward", "backward", "roundtrip")
+METRICS = {
+    "throughput": (("cpu_time_us", "CPU time (us; lower is faster)", ".6g"),
+                   ("mflops", "MFLOPS (higher is faster)", ".6g")),
+    "accuracy": (("relative_rmse", "Relative RMSE (lower is better)", ".3e"),
+                 ("max_abs", "Maximum absolute error (lower is better)", ".3e")),
+    "commit_comparison": (("current_us", "Current time (us)", ".6g"),
+                          ("previous_us", "Previous time (us)", ".6g"),
+                          ("throughput_ratio", "Throughput ratio", ".6g"),
+                          ("change_percent", "Change (%)", ".6g"),
+                          ("median_ratio", "Median ratio", ".6g"),
+                          ("mad_percent", "MAD (%)", ".6g")),
+}
+DISPLAY_NAMES = {
+    "fftw3": "FFTW measure", "fftw3_estimate": "FFTW estimate", "kfr": "KFR",
+    "pffft": "PFFFT", "vdsp": "vDSP", "vdsp_stride_2": "vDSP stride 2", "ipp": "IPP",
+    "armpl": "ArmPL measure", "armpl_estimate": "ArmPL estimate",
+    "aos_aos": "AoS->AoS", "aos_soa": "AoS->SoA", "soa_aos": "SoA->AoS", "soa_soa": "SoA->SoA",
+    "real_aos": "real->AoS", "real_soa": "real->SoA", "real_power": "real->power",
+    "aos_real": "AoS->real", "soa_real": "SoA->real", "aos": "AoS",
+}
 
 
 def case_keys(kind, all_apis=False):
@@ -102,32 +123,110 @@ def validate_args(parser, args):
             parser.error(f"--{name.replace('_', '-')} must be finite and positive")
 
 
+def print_tables(args, rows):
+    """Compare one metric at a time, with libraries (or APIs) as columns."""
+    column = "api" if args.apis else "library"
+    groups = {(row["direction"], None if args.apis else row["api"]) for row in rows}
+    for direction, api in sorted(groups, key=lambda group: (DIRECTIONS.index(group[0]), group[1] or "")):
+        group = [row for row in rows if row["direction"] == direction and (args.apis or row["api"] == api)]
+        columns = list(dict.fromkeys(row[column] for row in group))
+        if args.apis:
+            columns.sort(key=lambda name: (name == "real_power", name))
+        indexed = {(row["order"], row[column]): row for row in group}
+        orders = range(args.n0, args.n1 + 1)
+        if len(indexed) != len(group) or set(indexed) != {(order, name) for order in orders for name in columns}:
+            raise ValueError("Comparison table has duplicate or missing results")
+        scope = "zldsp APIs" if args.apis else DISPLAY_NAMES.get(api, api)
+        precision = "double" if args.double else "float"
+        print(f"\n{args.kind.upper()} {precision} {direction} ({scope})")
+        for metric, title, spec in METRICS[args.operation]:
+            print(title)
+            table = [["Order"] + [DISPLAY_NAMES.get(name, name) for name in columns]]
+            for order in orders:
+                cells = []
+                for name in columns:
+                    row = indexed[order, name]
+                    cells.append("SKIP" if row["status"] == "skipped" else format(row[metric], spec))
+                table.append([str(order)] + cells)
+            widths = [max(5 if i == 0 else 12, *(len(cell) for cell in values))
+                      for i, values in enumerate(zip(*table))]
+            for i, cells in enumerate(table):
+                print("  ".join(cell.rjust(width) for cell, width in zip(cells, widths)))
+                if i == 0:
+                    print("  ".join("-" * width for width in widths))
+            print()
+    skipped = {}
+    for row in rows:
+        if row["status"] == "skipped":
+            key = row["library"], row["direction"], row["api"], row["reason"]
+            skipped.setdefault(key, []).append(str(row["order"]))
+    for (library, direction, api, reason), orders in skipped.items():
+        print(f"SKIP {library} {direction}/{api}, orders {', '.join(orders)}: {reason}")
+
+
+def compact_json(value, indent=0):
+    """Keep numeric series in short chunks without rounding the JSON values."""
+    padding = " " * indent
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        lines = [f"{padding}  {json.dumps(key)}: {compact_json(item, indent + 2)}" for key, item in value.items()]
+        return "{\n" + ",\n".join(lines) + "\n" + padding + "}"
+    if isinstance(value, list):
+        if any(isinstance(item, (dict, list)) for item in value):
+            lines = [padding + "  " + compact_json(item, indent + 2) for item in value]
+            return "[\n" + ",\n".join(lines) + "\n" + padding + "]"
+        items = [json.dumps(item, allow_nan=False) for item in value]
+        if len(items) <= 5:
+            return "[" + ", ".join(items) + "]"
+        chunks = [", ".join(items[i:i + 5]) for i in range(0, len(items), 5)]
+        return "[\n" + ",\n".join(padding + "  " + chunk for chunk in chunks) + "\n" + padding + "]"
+    return json.dumps(value, allow_nan=False)
+
+
 def save_results(args, kind, operation, rows, **metadata):
+    context = dict(kind=kind, operation=operation, precision="double" if args.double else "float",
+                   isa="avx2" if args.avx2 else "sse2" if args.sse2 else "default",
+                   n0=args.n0, n1=args.n1)
     if args.json:
-        payload = dict(kind=kind, operation=operation, precision="double" if args.double else "float",
-                       isa="avx2" if args.avx2 else "sse2" if args.sse2 else "default",
-                       n0=args.n0, n1=args.n1, results=rows, **metadata)
+        payload = dict(context, results=rows, **metadata)
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n")
+    metrics = {}
+    for metric, _, _ in METRICS[operation]:
+        cases = metrics[metric] = {}
+        for row in sorted(rows, key=lambda row: (DIRECTIONS.index(row["direction"]), row["api"] == "real_power",
+                                                 row["api"], row["order"])):
+            case = f"{row['direction']}/{row['api']}"
+            libraries = cases.setdefault(case, {})
+            values = libraries.setdefault(row.get("library", "zldsp"), [None] * (args.n1 - args.n0 + 1))
+            values[row["order"] - args.n0] = None if row.get("status") == "skipped" else row[metric]
+    # Keep full per-case rows and paired runs in --json; the console summary
+    # uses compact order-aligned arrays, as the original benchmark scripts did.
+    summary = dict(context, **{key: value for key, value in metadata.items() if key != "runs"},
+                   orders=list(range(args.n0, args.n1 + 1)), metrics=metrics)
+    skipped = [row for row in rows if row.get("status") == "skipped"]
+    if skipped:
+        summary["skipped"] = skipped
+    print("\nJSON summary:")
+    print(compact_json(summary))
 
 
 def throughput(args):
     kind, all_apis = args.kind, args.apis
-    algorithms = get_algo_list() if args.all_libraries else args.libraries or ["zldsp"]
+    algorithms = (get_algo_list(full=args.all_libraries) if args.standard_libraries or args.all_libraries
+                  else args.libraries or ["zldsp"])
+    algorithms = list(dict.fromkeys(algorithms))
     rows = []
-    print(f"{'Library':<16} {'Order':>5} {'Direction':<9} {'API':<12} {'Time (us)':>12} {'MFLOPS':>12}", flush=True)
     for algorithm in algorithms:
+        print(f"Measuring {kind.upper()} {algorithm}, orders {args.n0}-{args.n1}...", file=sys.stderr, flush=True)
         target = f"throughput_{'zldsp_' if all_apis else ''}{kind}"
         executable = build_benchmark(algorithm, target, args.avx2, args.double, use_sse2=args.sse2)
         results = run_throughput(executable, kind, args.n0, args.n1, all_apis, args.repeats, args.min_time)
         for row in results:
             row["library"] = algorithm
-            prefix = f"{algorithm:<16} {row['order']:>5} {row['direction']:<9} {row['api']:<12}"
-            if row["status"] == "skipped":
-                print(f"{prefix} skipped: {row['reason']}")
-            else:
-                print(f"{prefix} {row['cpu_time_us']:12.6f} {row['mflops']:12.2f}")
         rows.extend(results)
+    print_tables(args, rows)
     save_results(args, kind, "throughput", rows)
 
 
@@ -165,19 +264,19 @@ def parse_accuracy(output, kind, order, all_apis, threshold):
 def accuracy(args):
     kind, all_apis = args.kind, args.apis
     rows = []
+    scope = "zldsp APIs" if all_apis else "library agreement"
+    print(f"Checking {kind.upper()} {scope}, orders {args.n0}-{args.n1}...", file=sys.stderr, flush=True)
     executable = build_benchmark("zldsp", f"accuracy_{'' if all_apis else 'mid_'}{kind}",
                                  args.avx2, args.double, use_sse2=args.sse2)
-    print(f"{'Library':<16} {'Order':>5} {'Direction':<9} {'API':<12} {'Relative RMSE':>15} {'Max abs':>15}", flush=True)
     for order in range(args.n0, args.n1 + 1):
         result = run_command([executable, order, args.repeats, 42, args.threshold])
         results = parse_accuracy(result.stdout, kind, order, all_apis, args.threshold)
-        for row in results:
-            print(f"{row['library']:<16} {order:>5} {row['direction']:<9} {row['api']:<12} "
-                  f"{row['relative_rmse']:15.6e} {row['max_abs']:15.6e}")
         rows.extend(results)
+        print(f"Order {order}: passed", file=sys.stderr, flush=True)
+    print_tables(args, rows)
+    print("All accuracy checks passed.")
     save_results(args, kind, "accuracy", rows, threshold=args.threshold,
                  reference="aos API" if all_apis else "component-wise library median")
-    print("All accuracy checks passed.")
 
 
 def git_output(repo, *args):
@@ -326,6 +425,8 @@ def parse_args(argv=None):
         if operation == "throughput":
             scope.add_argument("--libraries", nargs="+", choices=ALGOS,
                                help="Libraries to measure (default: zldsp)")
+            scope.add_argument("--standard-libraries", action="store_true",
+                               help="Measure available libraries except FFTW measure and estimate")
             scope.add_argument("--all-libraries", action="store_true",
                                help="Measure available libraries, including FFTW measure and estimate")
         command.add_argument("--repeats", type=int, default=6 if operation == "compare" else 3,

@@ -59,15 +59,18 @@ Compare one library, the available libraries, or all zldsp APIs:
 ```console
 python3 benchmark/run.py throughput cfft 5 20
 python3 benchmark/run.py throughput rfft 5 20 --libraries fftw3_estimate --double
+python3 benchmark/run.py throughput rfft 5 20 --standard-libraries
 python3 benchmark/run.py throughput cfft 5 20 --all-libraries
 python3 benchmark/run.py throughput rfft 5 20 --libraries zldsp kfr pffft vdsp
 python3 benchmark/run.py throughput cfft 5 20 --apis
 python3 benchmark/run.py throughput rfft 5 20 --apis
 ```
 
-Throughput defaults to zldsp. `--libraries` selects one or more backends; `--all-libraries`
-selects available backends, including both FFTW measure and estimate. `--apis` measures all zldsp APIs.
-These three options are mutually exclusive.
+Throughput defaults to zldsp. `--libraries` selects one or more backends; `--standard-libraries`
+selects the available vDSP, IPP, ArmPL (measure and estimate), KFR, PFFFT, and zldsp backends.
+`--all-libraries` adds FFTW measure and estimate. `--apis` measures all zldsp APIs.
+These four options are mutually exclusive. The regular CFFT/RFFT throughput workflows use the
+standard set; the full RFFT workflow includes FFTW, matching the original workflow split.
 
 Every transform is measured and reported separately as `forward` or `backward`. CFFT API coverage
 includes all four AoS/SoA input/output combinations in each direction. RFFT covers real/AoS and
@@ -107,7 +110,20 @@ sensitive to system load and frequency changes; small differences need repeated 
 
 ### Options and dependencies
 
-All three commands accept `--double`, `--avx2` or `--sse2`, and `--json <file>` for structured results.
+Accuracy and throughput tables use FFT orders as rows and libraries as columns. With `--apis`,
+the columns are zldsp APIs instead. Forward, backward, and round-trip results are separate, with
+one metric per table: CPU time in microseconds and MFLOPS for throughput; relative RMSE and maximum
+absolute error for accuracy. Throughput values use six significant digits; accuracy errors use
+scientific notation so small errors remain visible. Unsupported cases display `SKIP` with a reason.
+
+Every successful command ends with a valid, compact `JSON summary:` block in the console, including
+CI logs. It groups each metric by `direction/API` and library, with arrays aligned to the explicit
+`orders` list. Skipped values are `null`, with reasons in `skipped`. JSON values retain their full
+precision; rounding applies only to the tables. Commit summaries also include the compared revisions.
+
+All three commands accept `--double`, `--avx2` or `--sse2`, and `--json <file>`. The optional JSON file
+retains the detailed per-case `results` format, including raw paired runs for commit comparisons;
+the console summary is printed whether or not a file is requested.
 Orders must satisfy `1 <= n0 <= n1 <= 30`; the practical maximum depends on available memory.
 
 Supported throughput backends: `zldsp`, `fftw3`, `fftw3_estimate`, `kfr`, `pffft`, `vdsp`,
