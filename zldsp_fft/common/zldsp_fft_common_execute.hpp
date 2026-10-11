@@ -729,9 +729,16 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     /**
-     * Fuse RFFT post-processing, spectral multiplication, and inverse pre-processing.
-     * The two SoA views may be identical or disjoint: deliberately do not restrict
-     * them. Every mirrored pair is loaded completely before either half is stored.
+     * execute fused RFFT forward post-processing, spectral multiplication, and backward pre-processing, with a given SIMD tag
+     * @tparam D
+     * @tparam F
+     * @tparam SpectrumPtr
+     * @param d
+     * @param in
+     * @param spectrum
+     * @param out
+     * @param cfft_order
+     * @param w
      */
     template <typename D, typename F, typename SpectrumPtr>
     HWY_INLINE void execute_rfft_convolve_internal(D d, std::array<const F*, 2> in, SpectrumPtr spectrum,
@@ -776,10 +783,6 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 h2i = hn::Reverse(d, h2i);
             }
 
-            // For u=Z[k], v=conj(Z[m-k]), h=H[k], g=conj(H[m-k]):
-            // delta=h-g, a=h-ws*delta, b=g+ws*delta, c=wc*delta;
-            // Z'[k]=a*u+i*c*v, conj(Z'[m-k])=b*v-i*c*u.
-            // wc=cos(2*pi*k/N)/2 and ws=(1+sin(2*pi*k/N))/2.
             const auto wc = hn::Load(d, w + b * lanes * 2);
             const auto ws = hn::Load(d, w + b * lanes * 2 + lanes);
             const auto dr = hn::Sub(h1r, h2r);
@@ -802,8 +805,6 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 o2i = hn::NegMulAdd(bi, r2, hn::NegMulAdd(ci, i1, o2i));
             }
 
-            // As in the RFFT pre/post loops, the self-paired m/2 bin is in both
-            // final vectors. Both results come from the original loaded values.
             hn::StoreU(o1r, d, out[0] + k);
             hn::StoreU(o1i, d, out[1] + k);
             hn::StoreU(hn::Reverse(d, o2r), d, out[0] + mirror);
@@ -811,6 +812,16 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
         }
     }
 
+    /**
+     * execute fused RFFT forward post-processing, spectral multiplication, and backward pre-processing
+     * @tparam F
+     * @tparam SpectrumPtr
+     * @param in
+     * @param spectrum
+     * @param out
+     * @param cfft_order
+     * @param w
+     */
     template <typename F, typename SpectrumPtr>
     HWY_INLINE void execute_rfft_convolve(std::array<const F*, 2> in, SpectrumPtr spectrum,
                                           std::array<F*, 2> out, const size_t cfft_order,

@@ -66,17 +66,19 @@ void run_rfft(zldsp_fft_example::RFFT<F>& rfft, const std::size_t order) {
     // RFFT forward squared magnitude
     rfft.forward_sqr_mag(real_input.data(), real_output_real.data());
 
-    // Supply a raw spectrum on each call. Include 2/N in the kernel when
-    // normalized convolution is wanted; these are normalized identity kernels.
     const F scale = F(2) / static_cast<F>(fft_size);
     const std::vector<Complex> kernel_aos(fft_size / 2 + 1, Complex{scale, F(0)});
     const std::vector<F> kernel_real(fft_size / 2 + 1, scale);
     const std::vector<F> kernel_imag(fft_size / 2 + 1, F(0));
     const std::array<const F*, 2> kernel_soa{kernel_real.data(), kernel_imag.data()};
     std::vector<F> convolved(fft_size);
+    // RFFT convolve AoS
     rfft.convolve(real_input.data(), kernel_aos.data(), convolved.data());
+    // RFFT convolve SoA
     rfft.convolve(real_input.data(), kernel_soa, convolved.data());
+    // RFFT convolve real
     rfft.convolve(real_input.data(), kernel_real.data(), convolved.data());
+    // RFFT convolve in-place
     rfft.convolve(real_input.data(), kernel_real.data(), real_input.data());
 }
 

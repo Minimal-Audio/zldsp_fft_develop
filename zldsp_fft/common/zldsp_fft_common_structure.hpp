@@ -157,6 +157,12 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
         return AoSPtr<F>{reinterpret_cast<F*>(ptr)};
     }
 
+    /**
+     * make an AoSPtr from a const complex pointer
+     * @tparam F
+     * @param ptr
+     * @return AoS pointer wrapper
+     */
     template <typename F>
     [[nodiscard]] static AoSPtr<const F> make_aos(const std::complex<F>* ptr) noexcept {
         return AoSPtr<const F>{reinterpret_cast<const F*>(ptr)};
