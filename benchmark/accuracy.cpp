@@ -88,25 +88,157 @@ namespace zlbenchmark {
         return out;
     }
 
+    inline WideVector real_output(const F* values, size_t n) {
+        WideVector out(n);
+        for (size_t i = 0; i < n; ++i) out[i] = WideComplex(values[i], 0);
+        return out;
+    }
+
+    // Independent O(N^2) DFT reference for small convolution sizes. The inverse
+    // is half the conventional unscaled inverse, matching native RFFT scaling.
+    inline WideVector reference_convolve(const AlignedVector<C>& input, const AlignedVector<C>& kernel) {
+        const size_t n = input.size(), m = n / 2;
+        WideVector product(m + 1), out(n);
+        const auto phase = 2 * std::numbers::pi_v<long double> / n;
+        for (size_t k = 0; k <= m; ++k) {
+            WideComplex sum(0, 0);
+            for (size_t j = 0; j < n; ++j) {
+                const auto angle = phase * k * j;
+                sum += static_cast<long double>(input[j].real()) * WideComplex(std::cos(angle), -std::sin(angle));
+            }
+            product[k] = sum * WideComplex(kernel[k].real(), kernel[k].imag());
+        }
+        for (size_t j = 0; j < n; ++j) {
+            long double value = (product[0].real() + (j % 2 ? -1 : 1) * product[m].real()) / 2;
+            for (size_t k = 1; k < m; ++k) {
+                const auto angle = phase * k * j;
+                value += (product[k] * WideComplex(std::cos(angle), std::sin(angle))).real();
+            }
+            out[j] = WideComplex(value, 0);
+        }
+        return out;
+    }
+
     template <typename Case>
-    Errors check_api(int order, int repetitions, unsigned seed) {
-        const size_t n = fft_size(order);
+    Errors check_convolve(int order, int repetitions, unsigned seed) {
+        const size_t n = fft_size(order), bins = n / 2 + 1;
         Case test(order);
-        using Baseline = std::conditional_t<Case::real, RfftCase<Case::backward>, CfftCase<Case::backward>>;
-        Baseline baseline(order);
+        ConvolveCase<Case::layout, false> baseline(order);
         Errors errors;
-        for (int pattern = 0; pattern < 5 + repetitions; ++pattern) {
-            test.original = make_input(n, Case::real, Case::backward, pattern, seed + pattern);
-            baseline.original = test.original;
+        const auto run = [&] {
             test.reset();
+            baseline.original = test.original;
+            baseline.original_spectrum = test.original_spectrum;
             baseline.reset();
-            test.execute();
             baseline.execute();
-            auto expected = case_output(baseline);
-            if constexpr (Case::magnitude) for (auto& value : expected) value = std::norm(value);
+            test.execute();
+            const auto expected = case_output(baseline);
             errors.add(expected, case_output(test));
+            if (!test.input_unchanged() || !test.kernel_unchanged()) {
+                throw std::runtime_error("convolve modified input or spectrum");
+            }
+            test.reset();
+            test.execute_to(test.time.data());
+            errors.add(expected, real_output(test.time.data(), n));
+            if (!test.kernel_unchanged()) throw std::runtime_error("in-place convolve modified spectrum");
+        };
+        const auto random_kernel = [&](unsigned kernel_seed) {
+            test.original_spectrum = make_input(n, true, true, 5, kernel_seed);
+            if constexpr (Case::real_kernel) for (auto& h : test.original_spectrum) h.imag(0);
+        };
+        // Structured and random signals, changing raw kernels on the same plan.
+        for (int pattern = 0; pattern < 5 + repetitions; ++pattern) {
+            test.original = make_input(n, true, false, pattern, seed + pattern);
+            random_kernel(seed + pattern + 100);
+            run();
+        }
+        test.original = make_input(n, true, false, 5, seed + 200);
+        for (int pattern = 0; pattern < 7; ++pattern) {
+            test.original_spectrum.assign(bins, C(0, 0));
+            switch (pattern) {
+            case 1: std::fill(test.original_spectrum.begin(), test.original_spectrum.end(), C(1, 0)); break;
+            case 2: std::fill(test.original_spectrum.begin(), test.original_spectrum.end(), C(-1, 0)); break;
+            case 3: test.original_spectrum.front() = C(F(1.25), 0); break;
+            case 4: test.original_spectrum.back() = C(F(-0.75), 0); break;
+            case 5: test.original_spectrum[n / 4] = C(F(-0.5), Case::real_kernel ? F(0) : F(0.75)); break;
+            case 6:
+                test.original_spectrum[1] = C(F(0.25), Case::real_kernel ? F(0) : F(0.8));
+                if (n > 4) test.original_spectrum[n / 2 - 1] = C(F(-0.6), Case::real_kernel ? F(0) : F(0.3));
+                break;
+            default: break; // All-zero kernel.
+            }
+            test.original_spectrum.front().imag(0);
+            test.original_spectrum.back().imag(0);
+            run();
+            if (pattern == 1) errors.add(widen(test.original, n / 2), case_output(test));
+        }
+        // An independently known normalized identity catches accidental scaling.
+        test.original_spectrum.assign(bins, C(F(2) / F(n), 0));
+        run();
+        errors.add(widen(test.original), case_output(test));
+
+        random_kernel(seed + 300);
+        run();
+        if (n <= 64) errors.add(reference_convolve(test.original, test.original_spectrum), case_output(test));
+
+        // Offset every buffer by one element to exercise unaligned AoS/SoA/real
+        // loads and stores. Prefix sentinels and ASan catch boundary mistakes.
+        const F guard = F(12345);
+        AlignedVector<F> shifted_input(n + 1, guard), shifted_output(n + 1, guard);
+        AlignedVector<C> aos(bins + 1, C(guard, -guard));
+        AlignedVector<F> re(bins + 1, guard), im(bins + 1, -guard);
+        for (size_t i = 0; i < n; ++i) shifted_input[i + 1] = test.original[i].real();
+        for (size_t k = 0; k < bins; ++k) {
+            aos[k + 1] = test.original_spectrum[k];
+            re[k + 1] = aos[k + 1].real();
+            im[k + 1] = aos[k + 1].imag();
+        }
+        const auto original_input = shifted_input;
+        const auto original_aos = aos;
+        const auto original_re = re, original_im = im;
+        const auto execute_shifted = [&](F* output) {
+            const F* input = shifted_input.data() + 1;
+            if constexpr (Case::real_kernel) test.fft.convolve(input, static_cast<const F*>(re.data() + 1), output);
+            else if constexpr (Case::soa) {
+                test.fft.convolve(input, std::array<const F*, 2>{re.data() + 1, im.data() + 1}, output);
+            } else test.fft.convolve(input, static_cast<const C*>(aos.data() + 1), output);
+        };
+        execute_shifted(shifted_output.data() + 1);
+        errors.add(case_output(baseline), real_output(shifted_output.data() + 1, n));
+        if (shifted_input != original_input || shifted_output[0] != guard) {
+            throw std::runtime_error("unaligned convolve modified input or output guard");
+        }
+        execute_shifted(shifted_input.data() + 1);
+        errors.add(case_output(baseline), real_output(shifted_input.data() + 1, n));
+        if (shifted_input[0] != guard || aos != original_aos || re != original_re || im != original_im) {
+            throw std::runtime_error("unaligned convolve modified spectrum or input guard");
         }
         return errors;
+    }
+
+    template <typename Case>
+    Errors check_api(int order, int repetitions, unsigned seed) {
+        if constexpr (Case::convolution) {
+            return check_convolve<Case>(order, repetitions, seed);
+        } else {
+            const size_t n = fft_size(order);
+            Case test(order);
+            using Baseline = std::conditional_t<Case::real, RfftCase<Case::backward>, CfftCase<Case::backward>>;
+            Baseline baseline(order);
+            Errors errors;
+            for (int pattern = 0; pattern < 5 + repetitions; ++pattern) {
+                test.original = make_input(n, Case::real, Case::backward, pattern, seed + pattern);
+                baseline.original = test.original;
+                test.reset();
+                baseline.reset();
+                test.execute();
+                baseline.execute();
+                auto expected = case_output(baseline);
+                if constexpr (Case::magnitude) for (auto& value : expected) value = std::norm(value);
+                errors.add(expected, case_output(test));
+            }
+            return errors;
+        }
     }
 
     inline Errors check_roundtrip(int order, int repetitions, unsigned seed) {
@@ -257,7 +389,7 @@ int main(int argc, char** argv) {
         zlbenchmark::Reporter reporter(order, threshold);
 #ifdef ZLB_ALL_APIS
         zlbenchmark::for_each_case([&]<typename Case>() {
-            reporter.report("zldsp", Case::backward ? "backward" : "forward", Case::api,
+            reporter.report("zldsp", Case::direction, Case::api,
                             zlbenchmark::check_api<Case>(order, repetitions, seed));
         });
         reporter.report("zldsp", "roundtrip", "aos", zlbenchmark::check_roundtrip(order, repetitions, seed));

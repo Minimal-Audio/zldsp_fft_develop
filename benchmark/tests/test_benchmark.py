@@ -17,6 +17,9 @@ from build_config import build_benchmark, get_algo_list
 
 
 def timing(direction, api, order=5, duration=1000, **extra):
+    if direction == "convolve":
+        return dict(name=f"{direction}/{api}/{order}", run_type="iteration", cpu_time=duration,
+                    time_unit="ns", transforms_per_iteration=2, convolutions_per_iteration=1, **extra)
     return dict(name=f"{direction}/{api}/{order}", run_type="iteration", cpu_time=duration,
                 time_unit="ns", transforms_per_iteration=1, **extra)
 
@@ -73,12 +76,29 @@ class ThroughputParsingTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "skipped" and "mflops" not in row for row in results))
 
     def test_every_api_and_direction_is_required(self):
-        for kind, count in (("cfft", 8), ("rfft", 5)):
-            rows = [timing(direction, api) for direction, api in case_keys(kind, True)]
+        for kind, count in (("cfft", 8), ("rfft", 11)):
+            rows = [timing(direction, api) for direction, api in case_keys(kind, True, convolve_baselines=True)]
             parsed = parse_throughput({"benchmarks": rows}, kind, 5, 5, True)
             self.assertEqual(len(parsed), count)
             with self.assertRaises(ValueError):
                 parse_throughput({"benchmarks": rows[:-1]}, kind, 5, 5, True)
+
+    def test_convolution_units_and_separate_baselines(self):
+        rows = [timing(direction, api) for direction, api in case_keys("rfft", True, convolve_baselines=True)]
+        parsed = parse_throughput({"benchmarks": rows}, "rfft", 5, 5, True)
+        conv = {row["api"]: row for row in parsed if row["direction"] == "convolve"}
+        self.assertEqual(len(conv), 6)
+        for api, operations in (("complex_aos", 896), ("complex_soa", 896), ("real", 832)):
+            self.assertEqual(conv[api]["mflops"], operations)
+            self.assertEqual(conv[api + "_separate"]["mflops"], operations)
+        bad = copy.deepcopy(rows)
+        row = next(row for row in bad if row["name"].startswith("convolve/"))
+        row["convolutions_per_iteration"] = 2
+        with self.assertRaisesRegex(ValueError, "one convolution"):
+            parse_throughput({"benchmarks": bad}, "rfft", 5, 5, True)
+        with self.assertRaisesRegex(ValueError, "Missing"):
+            parse_throughput({"benchmarks": [row for row in rows if "_separate/" not in row["name"]]},
+                             "rfft", 5, 5, True)
 
 
 class AccuracyParsingTests(unittest.TestCase):
@@ -106,6 +126,16 @@ class AccuracyParsingTests(unittest.TestCase):
                      [dict(row, library="pffft") if row["library"] == "kfr" else row for row in self.rows]):
             with self.assertRaises(ValueError):
                 self.parse(rows)
+
+    def test_rfft_api_accuracy_requires_all_convolution_layouts(self):
+        cases = case_keys("rfft", True) | {("roundtrip", "aos")}
+        rows = [dict(library="zldsp", direction=direction, api=api, order=5, status="passed",
+                     relative_rmse=1e-8, max_abs=1e-7) for direction, api in cases]
+        output = "\n".join(json.dumps(row) for row in rows)
+        self.assertEqual(len(parse_accuracy(output, "rfft", 5, True, 1e-5)), 9)
+        missing = "\n".join(json.dumps(row) for row in rows if row["api"] != "complex_soa")
+        with self.assertRaisesRegex(ValueError, "coverage mismatch"):
+            parse_accuracy(missing, "rfft", 5, True, 1e-5)
 
 
 class ComparisonTests(unittest.TestCase):

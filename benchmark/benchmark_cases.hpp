@@ -77,6 +77,10 @@ namespace zlbenchmark {
             if constexpr (SoA) return std::array<F*, 2>{re_.data(), im_.data()};
             else return aos_.data();
         }
+        auto data() const {
+            if constexpr (SoA) return std::array<const F*, 2>{re_.data(), im_.data()};
+            else return aos_.data();
+        }
         size_t size() const { return SoA ? re_.size() : aos_.size(); }
         C operator[](size_t i) const {
             if constexpr (SoA) return C(re_[i], im_[i]);
@@ -99,6 +103,8 @@ namespace zlbenchmark {
     template <bool Backward, bool InputSoA = false, bool OutputSoA = false, typename FFT = CFFTClass>
     struct CfftCase {
         static constexpr bool backward = Backward, real = false, magnitude = false;
+        static constexpr bool convolution = false;
+        static constexpr const char* direction = Backward ? "backward" : "forward";
         static constexpr F output_scale = 1;
         static constexpr const char* api = InputSoA ? (OutputSoA ? "soa_soa" : "soa_aos")
                                                     : (OutputSoA ? "aos_soa" : "aos_aos");
@@ -130,6 +136,8 @@ namespace zlbenchmark {
     struct RfftCase {
         static_assert(!Magnitude || !Backward);
         static constexpr bool backward = Backward, real = true, magnitude = Magnitude;
+        static constexpr bool convolution = false;
+        static constexpr const char* direction = Backward ? "backward" : "forward";
         static constexpr F output_scale = Backward ? rfft_backward_scale : F(1);
         static constexpr const char* api = Magnitude ? "real_power"
             : Backward ? (SoA ? "soa_real" : "aos_real") : (SoA ? "real_soa" : "real_aos");
@@ -178,7 +186,95 @@ namespace zlbenchmark {
         }
     };
 
-    // Accuracy and throughput use exactly the same case inventory.
+    enum class ConvolveLayout { kComplexAoS, kComplexSoA, kReal };
+
+    template <ConvolveLayout Layout, bool Fused = true, typename FFT = RFFTClass>
+    struct ConvolveCase {
+        static constexpr bool convolution = true;
+        static constexpr bool real_kernel = Layout == ConvolveLayout::kReal;
+        // The real-kernel baseline uses SoA intermediates for componentwise multiplication.
+        static constexpr bool soa = Layout != ConvolveLayout::kComplexAoS;
+        static constexpr ConvolveLayout layout = Layout;
+        static constexpr F output_scale = 1;
+        static constexpr const char* direction = "convolve";
+        static constexpr const char* api = real_kernel ? (Fused ? "real" : "real_separate")
+            : soa ? (Fused ? "complex_soa" : "complex_soa_separate")
+                  : (Fused ? "complex_aos" : "complex_aos_separate");
+
+        FFT fft;
+        AlignedVector<F> time, out, real_spectrum;
+        ComplexBuffer<soa> spectrum, work;
+        AlignedVector<C> original, original_spectrum;
+
+        explicit ConvolveCase(int order) : fft(order), time(fft_size(order)), out(time.size()),
+            real_spectrum(real_kernel ? time.size() / 2 + 1 : 0),
+            spectrum(real_kernel ? 0 : time.size() / 2 + 1), work(Fused ? 0 : time.size() / 2 + 1) {
+            original = make_input(time.size(), true, false, 5, 42);
+            original_spectrum = make_input(time.size(), true, true, 5, 43);
+            if constexpr (real_kernel) for (auto& h : original_spectrum) h.imag(0);
+            reset();
+        }
+        void reset() {
+            for (size_t i = 0; i < time.size(); ++i) time[i] = original[i].real();
+            if constexpr (real_kernel) {
+                for (size_t k = 0; k < real_spectrum.size(); ++k) real_spectrum[k] = original_spectrum[k].real();
+            } else spectrum.assign(original_spectrum);
+        }
+        auto kernel_data() const {
+            if constexpr (real_kernel) return real_spectrum.data();
+            else return spectrum.data();
+        }
+        void execute_to(F* output) {
+            if constexpr (Fused) {
+                // Keep historical revisions buildable by the comparison harness;
+                // requesting a new API from an old revision fails explicitly.
+                if constexpr (requires { fft.convolve(time.data(), kernel_data(), output); }) {
+                    fft.convolve(time.data(), kernel_data(), output);
+                } else {
+                    throw std::runtime_error("convolve API is unavailable in this revision");
+                }
+            } else {
+                auto values = work.data();
+                const auto kernel = kernel_data();
+                fft.forward(time.data(), values);
+                for (size_t k = 0; k < work.size(); ++k) {
+                    if constexpr (real_kernel) {
+                        values[0][k] *= kernel[k];
+                        values[1][k] *= kernel[k];
+                    } else if constexpr (soa) {
+                        const F r = values[0][k], i = values[1][k];
+                        values[0][k] = r * kernel[0][k] - i * kernel[1][k];
+                        values[1][k] = r * kernel[1][k] + i * kernel[0][k];
+                    } else {
+                        const F r = values[k].real(), i = values[k].imag();
+                        values[k] = C(r * kernel[k].real() - i * kernel[k].imag(),
+                                      r * kernel[k].imag() + i * kernel[k].real());
+                    }
+                }
+                fft.backward(values, output);
+            }
+        }
+        void execute() { execute_to(out.data()); }
+        bool input_unchanged() const {
+            for (size_t i = 0; i < time.size(); ++i) if (time[i] != original[i].real()) return false;
+            return true;
+        }
+        bool kernel_unchanged() const {
+            for (size_t k = 0; k < original_spectrum.size(); ++k) {
+                if constexpr (real_kernel) {
+                    if (real_spectrum[k] != original_spectrum[k].real()) return false;
+                } else if (spectrum[k] != original_spectrum[k]) return false;
+            }
+            return true;
+        }
+        auto output_data() { return out.data(); }
+        bool output_finite() const { return all_finite(out); }
+        size_t output_size() const { return out.size(); }
+        C output(size_t i) const { return C(out[i], 0); }
+    };
+
+    // Accuracy and throughput share all public API cases. Throughput additionally
+    // measures three separate forward/multiply/backward convolution baselines.
     template <typename Visit>
     void for_each_case(Visit visit) {
 #ifdef ZLB_REAL_FFT
@@ -188,6 +284,9 @@ namespace zlbenchmark {
         visit.template operator()<RfftCase<false, true>>();
         visit.template operator()<RfftCase<true, true>>();
         visit.template operator()<RfftCase<false, false, true>>();
+        visit.template operator()<ConvolveCase<ConvolveLayout::kComplexAoS>>();
+        visit.template operator()<ConvolveCase<ConvolveLayout::kComplexSoA>>();
+        visit.template operator()<ConvolveCase<ConvolveLayout::kReal>>();
 #endif
 #else
         visit.template operator()<CfftCase<false>>();
@@ -200,6 +299,15 @@ namespace zlbenchmark {
         visit.template operator()<CfftCase<false, true, true>>();
         visit.template operator()<CfftCase<true, true, true>>();
 #endif
+#endif
+    }
+
+    template <typename Visit>
+    void for_each_convolve_baseline(Visit visit) {
+#if defined(ZLB_REAL_FFT) && defined(ZLB_ALL_APIS)
+        visit.template operator()<ConvolveCase<ConvolveLayout::kComplexAoS, false>>();
+        visit.template operator()<ConvolveCase<ConvolveLayout::kComplexSoA, false>>();
+        visit.template operator()<ConvolveCase<ConvolveLayout::kReal, false>>();
 #endif
     }
 }

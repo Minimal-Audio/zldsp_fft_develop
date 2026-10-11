@@ -69,5 +69,35 @@ namespace zldsp::fft {
         void forward_sqr_mag(F* in_buffer, F* out_buffer) noexcept {
             impl_.forward_sqr_mag(in_buffer, out_buffer);
         }
+
+        /**
+         * Circular convolution with a complex AoS spectrum in natural bin order.
+         * Input/output contain N real samples; spectrum contains N/2+1 bins,
+         * including real DC and Nyquist bins. Native RFFT scaling is retained:
+         * an all-ones spectrum returns (N/2)*input. Scale the spectrum by 2/N
+         * for normalized convolution.
+         *
+         * Input and spectrum are preserved, except that input == output is
+         * supported. Partial input/output overlap and overlap with the spectrum
+         * are unsupported. Buffers need only their element type's alignment.
+         * No allocation occurs; concurrent calls require separate RFFT instances.
+         */
+        void convolve(const F* in_buffer, const Complex* spectrum, F* out_buffer) noexcept {
+            impl_.convolve(in_buffer, spectrum, out_buffer);
+        }
+
+        /**
+         * As above, with separate real/imaginary spectrum arrays of N/2+1 values.
+         */
+        void convolve(const F* in_buffer, std::array<const F*, 2> spectrum, F* out_buffer) noexcept {
+            impl_.convolve(in_buffer, spectrum, out_buffer);
+        }
+
+        /**
+         * As above, with N/2+1 real spectrum multipliers (negative values allowed).
+         */
+        void convolve(const F* in_buffer, const F* spectrum, F* out_buffer) noexcept {
+            impl_.convolve(in_buffer, spectrum, out_buffer);
+        }
     };
 }

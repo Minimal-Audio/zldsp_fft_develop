@@ -81,6 +81,18 @@ namespace zldsp_fft_example::HWY_NAMESPACE {
             rfft_.forward_sqr_mag(input, output);
         }
 
+        void convolve(const F* input, const Complex<F>* spectrum, F* output) noexcept override {
+            rfft_.convolve(input, spectrum, output);
+        }
+
+        void convolve(const F* input, std::array<const F*, 2> spectrum, F* output) noexcept override {
+            rfft_.convolve(input, spectrum, output);
+        }
+
+        void convolve(const F* input, const F* spectrum, F* output) noexcept override {
+            rfft_.convolve(input, spectrum, output);
+        }
+
     private:
         zldsp::fft::HWY_NAMESPACE::RFFT<F> rfft_;
     };

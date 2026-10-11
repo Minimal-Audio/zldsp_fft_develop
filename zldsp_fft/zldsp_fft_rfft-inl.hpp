@@ -135,7 +135,31 @@ namespace zldsp::fft::HWY_NAMESPACE {
                                                       state_.cfft_order, rfft_w_.get());
         }
 
+        // All overloads preserve input/spectrum, support input == output, and
+        // retain native RFFT scaling. See the public wrapper for buffer contracts.
+        void convolve(const F* in_buffer, const Complex* spectrum, F* out_buffer) noexcept {
+            execute_convolve(in_buffer, common::make_aos(spectrum), out_buffer);
+        }
+
+        void convolve(const F* in_buffer, std::array<const F*, 2> spectrum, F* out_buffer) noexcept {
+            execute_convolve(in_buffer, common::make_soa(spectrum), out_buffer);
+        }
+
+        void convolve(const F* in_buffer, const F* spectrum, F* out_buffer) noexcept {
+            execute_convolve(in_buffer, spectrum, out_buffer);
+        }
+
     private:
+        template <typename SpectrumPtr>
+        void execute_convolve(const F* in, SpectrumPtr spectrum, F* out) noexcept {
+            common::execute_cfft<true>(state_, common::AoSPtr<const F>{in}, forward_cfft_output_);
+            common::execute_rfft_convolve<F>(
+                {forward_cfft_output_.real, forward_cfft_output_.imag}, spectrum,
+                {backward_cfft_input_.real, backward_cfft_input_.imag}, state_.cfft_order, rfft_w_.get());
+            common::execute_cfft<false>(state_, backward_cfft_input_,
+                                       common::make_aos(reinterpret_cast<Complex*>(out)));
+        }
+
         /**
          * execute forward RFFT
          * @tparam OutPtr

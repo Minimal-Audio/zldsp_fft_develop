@@ -38,6 +38,9 @@ namespace zldsp_fft_example {
         virtual void backward(Complex<F>* input, F* output) noexcept = 0;
         virtual void backward(SoA<F> input, F* output) noexcept = 0;
         virtual void forward_sqr_mag(F* input, F* output) noexcept = 0;
+        virtual void convolve(const F* input, const Complex<F>* spectrum, F* output) noexcept = 0;
+        virtual void convolve(const F* input, std::array<const F*, 2> spectrum, F* output) noexcept = 0;
+        virtual void convolve(const F* input, const F* spectrum, F* output) noexcept = 0;
     };
 
     namespace detail {

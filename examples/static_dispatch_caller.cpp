@@ -66,6 +66,20 @@ void run_rfft(zldsp::fft::RFFT<F>& rfft, const std::size_t order) {
     rfft.backward(real_output_soa, real_input.data());
     // RFFT forward squared magnitude
     rfft.forward_sqr_mag(real_input.data(), real_output_real.data());
+
+    // Native convolution scaling is N/2. These identity kernels include 2/N,
+    // so all three calls reproduce real_input. The kernel is read only per call.
+    const F scale = F(2) / static_cast<F>(fft_size);
+    const std::vector<Complex> kernel_aos(fft_size / 2 + 1, Complex{scale, F(0)});
+    const std::vector<F> kernel_real(fft_size / 2 + 1, scale);
+    const std::vector<F> kernel_imag(fft_size / 2 + 1, F(0));
+    const std::array<const F*, 2> kernel_soa{kernel_real.data(), kernel_imag.data()};
+    std::vector<F> convolved(fft_size);
+    rfft.convolve(real_input.data(), kernel_aos.data(), convolved.data());
+    rfft.convolve(real_input.data(), kernel_soa, convolved.data());
+    rfft.convolve(real_input.data(), kernel_real.data(), convolved.data());
+    // Exact input/output aliasing is also supported.
+    rfft.convolve(real_input.data(), kernel_real.data(), real_input.data());
 }
 
 int main(const int argc, char** argv) {

@@ -32,7 +32,11 @@ python3 benchmark/run.py accuracy rfft 2 20 --double
 ```
 
 The API checks compare every zldsp layout with its AoS API, in both directions. RFFT also checks
-`forward_sqr_mag` separately. Both accuracy suites verify normalized forward/backward round trips.
+`forward_sqr_mag` separately. RFFT `--apis` checks all three `convolve` overloads against separate
+forward/multiply/backward execution, plus an independent direct DFT reference for small sizes.
+Convolution checks cover changing kernels, native and caller-normalized scaling, zero/negative/sparse
+kernels, DC/Nyquist and mirrored bins, preserved inputs/kernels, unaligned buffers, and in-place output.
+Both accuracy suites verify normalized forward/backward round trips.
 
 ```console
 python3 benchmark/run.py accuracy cfft 2 20 --apis
@@ -74,9 +78,12 @@ standard set; the full RFFT workflow includes FFTW, matching the original workfl
 
 Every transform is measured and reported separately as `forward` or `backward`. CFFT API coverage
 includes all four AoS/SoA input/output combinations in each direction. RFFT covers real/AoS and
-real/SoA in each direction plus forward squared magnitude.
+real/SoA in each direction plus forward squared magnitude. RFFT `--apis` additionally reports
+`convolve` timings for complex AoS, complex SoA, and real kernels, alongside matching `_separate`
+forward/multiply/backward baselines. The real-kernel baseline uses SoA intermediate spectra.
 
-One Google Benchmark iteration performs **one transform**. Plans and allocations are outside
+One Google Benchmark iteration performs **one transform**, or **one complete convolution** (two
+transforms plus multiplication) for a `convolve` case. Plans and allocations are outside
 the timing region. Inputs are bounded and reused, never fed from the previous output. If an API
 modifies its input, restoration is outside the timing region. Outputs are checked for finiteness
 before and after timing. Packing conversions and scaling performed by external wrappers are part
@@ -86,6 +93,9 @@ The reported time is the median CPU time across `--repeats` runs (default 3).
 `--min-time` controls minimum seconds per case/repetition (default 0.1). MFLOPS uses the conventional
 estimate `5*N*log2(N)` for CFFT or `2.5*N*log2(N)` for RFFT; it is not an instruction count.
 For squared magnitude, the same RFFT estimate is used, so its time is the more useful comparison.
+Convolution uses the same nominal work for fused and separate paths: `5*N*log2(N) + 3*N` for
+complex kernels or `5*N*log2(N) + N` for real kernels. Use CPU time to assess the fusion's speedup;
+this MFLOPS estimate does not count the fused implementation's actual arithmetic.
 Unsupported PFFFT sizes are explicitly marked as skipped, never reported as zero-time work.
 Other build/execution failures stop the run.
 
@@ -102,6 +112,9 @@ Highway and Google Benchmark dependencies. The **same harness and CMake configur
 checkout** run against both FFT implementations, preventing changes in measurement methodology from
 appearing as speedups. Uncommitted FFT changes are excluded. No checkout, reset, or fetch is performed;
 the requested commits and submodule objects must already exist locally.
+RFFT `--apis` comparisons now include convolution, so both revisions must provide `convolve`;
+an older revision reports the missing API explicitly. Comparisons without `--apis` still measure
+only the original transform APIs.
 
 Runs alternate which revision is measured first. The summary reports each direction/API independently,
 with the geometric mean of paired throughput ratios (`current / previous`, greater than 1 is faster),
@@ -111,7 +124,7 @@ sensitive to system load and frequency changes; small differences need repeated 
 ### Options and dependencies
 
 Accuracy and throughput tables use FFT orders as rows and libraries as columns. With `--apis`,
-the columns are zldsp APIs instead. Forward, backward, and round-trip results are separate, with
+the columns are zldsp APIs instead. Forward, backward, convolution, and round-trip results are separate, with
 one metric per table: CPU time in microseconds and MFLOPS for throughput; relative RMSE and maximum
 absolute error for accuracy. Throughput values use six significant digits; accuracy errors use
 scientific notation so small errors remain visible. Unsupported cases display `SKIP` with a reason.
@@ -139,6 +152,33 @@ CMake options `ACCURACY_ENABLE_IPP=OFF` and `ACCURACY_ENABLE_VDSP=OFF` exclude o
 
 ## Use `zldsp::fft` in another project
 
+### RFFT convolution
+
+`RFFT<F>::convolve(input, spectrum, output)` performs circular convolution of an `N = 2^order`
+sample real block with a supplied frequency response. It fuses RFFT postprocessing, multiplication,
+and inverse preprocessing into one pass between the two `N/2`-point complex FFTs, using the existing
+RFFT workspace. There is no intermediate RFFT spectrum allocation or kernel preparation step.
+
+The spectrum contains `N/2 + 1` bins in natural order, from DC to Nyquist:
+
+```cpp
+// input/output: N floats; each spectrum array: N/2 + 1 elements.
+zldsp::fft::RFFT<float> fft(order);
+fft.convolve(input, complex_spectrum, output); // const std::complex<float>* (AoS)
+fft.convolve(input, std::array<const float*, 2>{spectrum_real, spectrum_imag}, output); // SoA
+fft.convolve(input, real_spectrum, output); // const float*: real multipliers, including negative values
+fft.convolve(input, real_spectrum, input);  // Exact in-place output is supported.
+```
+
+Complex DC and Nyquist bins must be real; negative-frequency bins are implied by conjugate symmetry.
+Native scaling matches separate `forward`, spectral multiplication, and `backward`: an all-ones
+spectrum produces `(N/2) * input`. Pre-scale the spectrum by `2/N` for normalized convolution.
+Input and spectrum are preserved for disjoint output. Partial input/output overlap and spectrum
+overlap with either time buffer are unsupported; only ordinary element alignment is required.
+Calls allocate no memory and borrow the spectrum only for the call, so kernels may change freely.
+One instance owns mutable scratch space; use separate instances for concurrent execution.
+Zero padding and overlap-add/save for linear or streaming convolution remain caller responsibilities.
+
 ### Static Dispatch
 
 ```cmake
@@ -154,7 +194,8 @@ Use the compiler's architecture option to select an SSE, AVX2, or NEON static ta
 | AVX2        | `-march=x86-64-v3 -maes -mpclmul` | `/arch:AVX2`     |
 | NEON        | `-march=armv8-a+simd`             | `/arch:armv8.0`  |
 
-See [`static_dispatch_caller`](examples/static_dispatch_caller.cpp) for CFFT and RFFT static dispatch examples with AoS and SoA layouts.
+See [`static_dispatch_caller`](examples/static_dispatch_caller.cpp) for CFFT and RFFT static dispatch examples,
+including all convolution overloads and normalized identity kernels.
 
 ### Caller-owned Dynamic Dispatch
 
@@ -166,7 +207,9 @@ target_compile_definitions(my_dynamic_target PRIVATE "HWY_DISABLED_TARGETS=~(HWY
 
 Compile this target for the oldest supported baseline (for example, `-march=x86-64` for SSE2).
 
-See [`wrapper`](examples/dynamic_dispatch_wrapper.cpp), its [`interface`](examples/dynamic_dispatch_wrapper.hpp), and [`dynamic_dispatch_caller`](examples/dynamic_dispatch_caller.cpp) for CFFT and RFFT dynamic dispatch examples with AoS and SoA layouts.
+See [`wrapper`](examples/dynamic_dispatch_wrapper.cpp), its [`interface`](examples/dynamic_dispatch_wrapper.hpp),
+and [`dynamic_dispatch_caller`](examples/dynamic_dispatch_caller.cpp) for CFFT and RFFT dynamic dispatch examples,
+including the three convolution overloads.
 
 ## License
 

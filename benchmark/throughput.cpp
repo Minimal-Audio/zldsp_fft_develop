@@ -37,8 +37,15 @@ namespace zlbenchmark {
                 throughput_failed = true;
                 state.SkipWithError("non-finite output after measurement");
             }
+            if constexpr (Case::convolution) {
+                if (!test.kernel_unchanged()) {
+                    throughput_failed = true;
+                    state.SkipWithError("convolution modified its kernel");
+                }
+                state.counters["convolutions_per_iteration"] = 1;
+            }
             state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(fft_size(state.range(0))));
-            state.counters["transforms_per_iteration"] = 1;
+            state.counters["transforms_per_iteration"] = Case::convolution ? 2 : 1;
             state.counters["input_reset_required"] = destructive ? 1 : 0;
         } catch (const UnsupportedSize& error) {
             state.SkipWithError((std::string("unsupported size: ") + error.what()).c_str());
@@ -60,11 +67,13 @@ int main(int argc, char** argv) {
         argv[argc] = nullptr;
         benchmark::Initialize(&argc, argv);
         if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
-        zlbenchmark::for_each_case([&]<typename Case>() {
-            const std::string name = std::string(Case::backward ? "backward/" : "forward/") + Case::api;
+        const auto register_case = [&]<typename Case>() {
+            const std::string name = std::string(Case::direction) + "/" + Case::api;
             benchmark::RegisterBenchmark(name.c_str(), zlbenchmark::measure<Case>)
                 ->DenseRange(n0, n1)->Unit(benchmark::kMicrosecond);
-        });
+        };
+        zlbenchmark::for_each_case(register_case);
+        zlbenchmark::for_each_convolve_baseline(register_case);
         benchmark::RunSpecifiedBenchmarks();
         benchmark::Shutdown();
         return zlbenchmark::throughput_failed ? 1 : 0;

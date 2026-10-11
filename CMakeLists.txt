@@ -354,6 +354,12 @@ if(BENCHMARK_SELF_TESTS)
     foreach(target IN LISTS ZLDSP_ACCURACY_TARGETS)
         add_test(NAME ${target} COMMAND ${target} 5)
     endforeach()
+    if(TARGET zldsp_fft_accuracy_rfft)
+        # Endpoints, SIMD tag changes, both Stockham buffer parities, and hybrid FFTs.
+        foreach(order 1 2 3 7 8 11 12 16)
+            add_test(NAME rfft_apis_order_${order} COMMAND zldsp_fft_accuracy_rfft ${order} 3)
+        endforeach()
+    endif()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(NAME benchmark_python COMMAND ${Python3_EXECUTABLE} -m unittest discover
         -s ${CMAKE_CURRENT_SOURCE_DIR}/benchmark/tests)

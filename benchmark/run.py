@@ -15,7 +15,7 @@ from build_config import ALGOS, ROOT, build_benchmark, get_algo_list, run_comman
 
 TIME_TO_US = {"ns": 1e-3, "us": 1.0, "ms": 1e3, "s": 1e6}
 REQUIRED_SUBMODULES = ("google/benchmark", "google/highway")
-DIRECTIONS = ("forward", "backward", "roundtrip")
+DIRECTIONS = ("forward", "backward", "convolve", "roundtrip")
 METRICS = {
     "throughput": (("cpu_time_us", "CPU time (us; lower is faster)", ".6g"),
                    ("mflops", "MFLOPS (higher is faster)", ".6g")),
@@ -35,14 +35,20 @@ DISPLAY_NAMES = {
     "aos_aos": "AoS->AoS", "aos_soa": "AoS->SoA", "soa_aos": "SoA->AoS", "soa_soa": "SoA->SoA",
     "real_aos": "real->AoS", "real_soa": "real->SoA", "real_power": "real->power",
     "aos_real": "AoS->real", "soa_real": "SoA->real", "aos": "AoS",
+    "complex_aos": "complex AoS fused", "complex_soa": "complex SoA fused", "real": "real fused",
+    "complex_aos_separate": "complex AoS separate", "complex_soa_separate": "complex SoA separate",
+    "real_separate": "real separate",
 }
 
 
-def case_keys(kind, all_apis=False):
+def case_keys(kind, all_apis=False, convolve_baselines=False):
     if kind == "rfft":
         cases = {("forward", "real_aos"), ("backward", "aos_real")}
         if all_apis:
             cases |= {("forward", "real_soa"), ("backward", "soa_real"), ("forward", "real_power")}
+            cases |= {("convolve", api) for api in ("complex_aos", "complex_soa", "real")}
+            if convolve_baselines:
+                cases |= {("convolve", api + "_separate") for api in ("complex_aos", "complex_soa", "real")}
         return cases
     apis = ["aos_aos", "aos_soa", "soa_aos", "soa_soa"] if all_apis else ["aos_aos"]
     return {(direction, api) for direction in ("forward", "backward") for api in apis}
@@ -50,7 +56,7 @@ def case_keys(kind, all_apis=False):
 
 def parse_throughput(data, kind, n0, n1, all_apis=False):
     """One row per order/direction/API; use median iteration time across repeats."""
-    expected = {(direction, api, order) for direction, api in case_keys(kind, all_apis)
+    expected = {(direction, api, order) for direction, api in case_keys(kind, all_apis, convolve_baselines=True)
                 for order in range(n0, n1 + 1)}
     samples, skipped = {}, {}
     for entry in data.get("benchmarks", []):
@@ -70,8 +76,11 @@ def parse_throughput(data, kind, n0, n1, all_apis=False):
                 raise RuntimeError(f"{key}: {reason}")
             skipped[key] = reason
             continue
-        if entry.get("transforms_per_iteration") != 1:
-            raise ValueError(f"{key}: expected one transform per iteration")
+        convolution = key[0] == "convolve"
+        if entry.get("transforms_per_iteration") != (2 if convolution else 1):
+            raise ValueError(f"{key}: incorrect transforms per iteration")
+        if convolution and entry.get("convolutions_per_iteration") != 1:
+            raise ValueError(f"{key}: expected one convolution per iteration")
         unit = entry.get("time_unit")
         if unit not in TIME_TO_US:
             raise ValueError(f"Unsupported benchmark time unit: {unit}")
@@ -95,7 +104,13 @@ def parse_throughput(data, kind, n0, n1, all_apis=False):
             row.update(status="skipped", reason=skipped[key])
         else:
             duration = statistics.median(samples[key])
-            operations = (2.5 if kind == "rfft" else 5) * (2 ** order) * order
+            n = 2 ** order
+            if direction == "convolve":
+                # Same conventional work estimate for fused and separate paths;
+                # this is a throughput unit, not an actual instruction count.
+                operations = 5 * n * order + (n if api.startswith("real") else 3 * n)
+            else:
+                operations = (2.5 if kind == "rfft" else 5) * n * order
             mflops = operations / duration
             if not math.isfinite(mflops):
                 raise ValueError(f"{key}: non-finite throughput")
@@ -275,8 +290,11 @@ def accuracy(args):
         print(f"Order {order}: passed", file=sys.stderr, flush=True)
     print_tables(args, rows)
     print("All accuracy checks passed.")
+    reference = "aos API" if all_apis else "component-wise library median"
+    if all_apis and kind == "rfft":
+        reference += "; convolution: separate path and small direct DFT"
     save_results(args, kind, "accuracy", rows, threshold=args.threshold,
-                 reference="aos API" if all_apis else "component-wise library median")
+                 reference=reference)
 
 
 def git_output(repo, *args):
