@@ -17,7 +17,7 @@ TIME_TO_US = {"ns": 1e-3, "us": 1.0, "ms": 1e3, "s": 1e6}
 REQUIRED_SUBMODULES = ("google/benchmark", "google/highway")
 DIRECTIONS = ("forward", "backward", "convolve", "roundtrip")
 METRICS = {
-    "throughput": (("mflops", "MFLOPS (higher is faster)", ".6g"),),
+    "throughput": (("mflops", "MFLOPS (higher is faster)", ".1f"),),
     "accuracy": (("relative_rmse", "Relative RMSE (lower is better)", ".3e"),
                  ("max_abs", "Maximum absolute error (lower is better)", ".3e")),
     "commit_comparison": (("current_us", "Current time (us)", ".6g"),
@@ -178,24 +178,33 @@ def print_tables(args, rows):
         print(f"SKIP {library} {direction}/{api}, orders {', '.join(orders)}: {reason}")
 
 
-def compact_json(value, indent=0):
-    """Keep numeric series in short chunks without rounding the JSON values."""
+def format_json_value(value, float_spec=None):
+    if float_spec and isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("Out of range float values are not JSON compliant")
+        return format(value, float_spec)
+    return json.dumps(value, allow_nan=False)
+
+
+def compact_json(value, indent=0, float_spec=None):
+    """Keep numeric series in short chunks."""
     padding = " " * indent
     if isinstance(value, dict):
         if not value:
             return "{}"
-        lines = [f"{padding}  {json.dumps(key)}: {compact_json(item, indent + 2)}" for key, item in value.items()]
+        lines = [f"{padding}  {json.dumps(key)}: {compact_json(item, indent + 2, float_spec)}"
+                 for key, item in value.items()]
         return "{\n" + ",\n".join(lines) + "\n" + padding + "}"
     if isinstance(value, list):
         if any(isinstance(item, (dict, list)) for item in value):
-            lines = [padding + "  " + compact_json(item, indent + 2) for item in value]
+            lines = [padding + "  " + compact_json(item, indent + 2, float_spec) for item in value]
             return "[\n" + ",\n".join(lines) + "\n" + padding + "]"
-        items = [json.dumps(item, allow_nan=False) for item in value]
+        items = [format_json_value(item, float_spec) for item in value]
         if len(items) <= 5:
             return "[" + ", ".join(items) + "]"
         chunks = [", ".join(items[i:i + 5]) for i in range(0, len(items), 5)]
         return "[\n" + ",\n".join(padding + "  " + chunk for chunk in chunks) + "\n" + padding + "]"
-    return json.dumps(value, allow_nan=False)
+    return format_json_value(value, float_spec)
 
 
 def save_results(args, kind, operation, rows, **metadata):
@@ -214,7 +223,8 @@ def save_results(args, kind, operation, rows, **metadata):
             case = f"{row['direction']}/{row['api']}"
             libraries = cases.setdefault(case, {})
             values = libraries.setdefault(row.get("library", "zldsp"), [None] * (args.n1 - args.n0 + 1))
-            values[row["order"] - args.n0] = None if row.get("status") == "skipped" else row[metric]
+            values[row["order"] - args.n0] = (None if row.get("status") == "skipped"
+                                              else float(row[metric]) if operation == "throughput" else row[metric])
     # Keep full per-case rows and paired runs in --json; the console summary
     # uses compact order-aligned arrays, as the original benchmark scripts did.
     summary = dict(context, **{key: value for key, value in metadata.items() if key != "runs"},
@@ -223,7 +233,7 @@ def save_results(args, kind, operation, rows, **metadata):
     if skipped:
         summary["skipped"] = skipped
     print("\nJSON summary:")
-    print(compact_json(summary))
+    print(compact_json(summary, float_spec=".1f" if operation == "throughput" else None))
 
 
 def throughput(args):

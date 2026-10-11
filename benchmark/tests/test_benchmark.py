@@ -187,7 +187,7 @@ class ReportingTests(unittest.TestCase):
 
     def test_throughput_skips_are_null_and_detailed_json_is_preserved(self):
         rows = [dict(order=order, library=library, direction=direction, api="aos_aos", status="measured",
-                     cpu_time_us=0.1234567890123456, mflops=800.1234567890123, samples=3)
+                     cpu_time_us=0.1234567890123456, mflops=1410 if order == 5 else 800.1234567890123, samples=3)
                 for order in (5, 6) for library in ("zldsp", "pffft") for direction in ("forward", "backward")]
         rows[2] = dict(order=5, library="pffft", direction="forward", api="aos_aos", status="skipped",
                        reason="unsupported size: test")
@@ -200,10 +200,14 @@ class ReportingTests(unittest.TestCase):
                 save_results(args, args.kind, "throughput", rows)
             summary = self.summary(output)
             self.assertEqual(json.loads(path.read_text())["results"], rows)
-        self.assertIn("SKIP", output.getvalue())
-        self.assertNotIn("CPU time", output.getvalue())
+        text = output.getvalue()
+        self.assertIn("SKIP", text)
+        self.assertNotIn("CPU time", text)
+        self.assertIn("1410.0", text)
+        self.assertIn("[1410.0, 800.1]", text)
+        self.assertIn("[null, 800.1]", text)
         self.assertEqual(set(summary["metrics"]), {"mflops"})
-        self.assertEqual(summary["metrics"]["mflops"]["forward/aos_aos"]["pffft"], [None, rows[6]["mflops"]])
+        self.assertEqual(summary["metrics"]["mflops"]["forward/aos_aos"]["pffft"], [None, 800.1])
         self.assertEqual(summary["skipped"], [rows[2]])
 
     def test_commit_summary_omits_raw_runs_but_keeps_revisions_and_ratios(self):
