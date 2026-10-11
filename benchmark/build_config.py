@@ -1,135 +1,75 @@
-import argparse
-import subprocess
+"""Location-independent CMake builds for the benchmark command."""
+
 import os
-import sys
 import platform
-import json
+import subprocess
+from pathlib import Path
 
-algos = ["zldsp",
-         "fftw3", "fftw3_estimate", "kfr", "vdsp", "vdsp_stride_2", "pffft", "ipp", "armpl", "armpl_estimate"]
+ROOT = Path(__file__).resolve().parents[1]
+ALGOS = ("zldsp", "fftw3", "fftw3_estimate", "kfr", "vdsp", "vdsp_stride_2",
+         "pffft", "ipp", "armpl", "armpl_estimate")
+BENCHMARKS = tuple(f"{mode}_{kind}" for mode in
+                   ("accuracy", "accuracy_mid", "throughput", "throughput_zldsp")
+                   for kind in ("cfft", "rfft"))
 
 
-def get_algo_list(full=False):
-    if not full:
-        return ["vdsp", "ipp", "armpl", "armpl_estimate", "kfr", "pffft", "zldsp"]
-    else:
-        return ["vdsp", "ipp", "armpl", "armpl_estimate", "fftw3", "fftw3_estimate", "kfr", "pffft", "zldsp"]
+def get_algo_list():
+    """List bundled and installed backends compatible with this platform."""
+    result = ["fftw3", "fftw3_estimate", "kfr", "pffft", "zldsp"]
+    if platform.system() == "Darwin":
+        result.insert(0, "vdsp")
+    if os.environ.get("ARMPL_DIR"):
+        result[0:0] = ["armpl", "armpl_estimate"]
+    if platform.machine().lower() in ("x86_64", "amd64"):
+        packages = Path.home() / ".nuget" / "packages"
+        package = {"Darwin": "intelipp.mac", "Linux": "intelipp.static.linux-x64",
+                   "Windows": "intelipp.static.win-x64"}.get(platform.system())
+        if os.environ.get("IPP_ROOT") or os.environ.get("IPPROOT") or (package and (packages / package).is_dir()):
+            result.insert(0, "ipp")
+    return result
 
-def replace_result_keys(results):
-    r = {}
-    for key, value in results.items():
-        if key == "vdsp":
-            r["vDSP"] = value
-        elif key == "ipp":
-            r["IPP"] = value
-        elif key == "armpl":
-            r["ArmPL"] = value
-        elif key == "armpl_estimate":
-            r["ArmPL estimate"] = value
-        elif key == "pffft":
-            r["PFFFT"] = value
-        elif key == "kfr":
-            r["KFR"] = value
-        elif key == "fftw3":
-            r["FFTW3"] = value
-        elif key == "fftw3_estimate":
-            r["FFTW3 estimate"] = value
-        else:
-            r[key] = value
-    return r
 
-def build_benchmark(algorithm, benchmark_type, use_avx2=False, use_double=False, to_print=False):
-    build_dir = "build_fft"
-    os.makedirs(build_dir, exist_ok=True)
+def run_command(command, cwd=None):
+    result = subprocess.run([str(arg) for arg in command], cwd=cwd, capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(f"Command failed ({result.returncode}): {command}\n{result.stdout}\n{result.stderr}")
+    return result
 
-    cmake_cmd = ["cmake", "..", "-DCMAKE_BUILD_TYPE=Release", "-G", "Ninja"]
-    active_targets = {
-        "accuracy_cfft": "-DACCURACY_CFFT_TEST=ON",
-        "accuracy_rfft": "-DACCURACY_RFFT_TEST=ON",
-        "accuracy_mid_cfft": "-DACCURACY_MID_CFFT_TEST=ON",
-        "accuracy_mid_rfft": "-DACCURACY_MID_RFFT_TEST=ON",
-        "throughput_cfft": "-DTHROUGHPUT_CFFT_TEST=ON",
-        "throughput_rfft": "-DTHROUGHPUT_RFFT_TEST=ON",
-        "throughput_zldsp_cfft": "-DTHROUGHPUT_ZLDSP_CFFT_TEST=ON",
-        "throughput_zldsp_rfft": "-DTHROUGHPUT_ZLDSP_RFFT_TEST=ON"
-    }
 
-    for t, flag in active_targets.items():
-        if benchmark_type == t:
-            cmake_cmd.append(flag)
-        else:
-            cmake_cmd.append(flag.replace("=ON", "=OFF"))
-
-    if use_avx2:
-        cmake_cmd += ["-DUSE_AVX2=ON"]
-    else:
-        cmake_cmd += ["-DUSE_AVX2=OFF"]
-
-    if use_double:
-        cmake_cmd += ["-DUSE_DOUBLE=ON"]
-    else:
-        cmake_cmd += ["-DUSE_DOUBLE=OFF"]
-
-    if platform.system() == "Windows":
-        cmake_cmd += ["-DCMAKE_C_COMPILER=clang-cl", "-DCMAKE_CXX_COMPILER=clang-cl"]
-    if platform.system() == "Linux":
-        cmake_cmd += ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
-
-    for algo in algos:
-        if algo == algorithm:
-            cmake_cmd.append(f"-DENABLE_{algo.upper()}=ON")
-        else:
-            cmake_cmd.append(f"-DENABLE_{algo.upper()}=OFF")
-
-    if algorithm in ("armpl", "armpl_estimate") and os.environ.get("ARMPL_DIR"):
-        cmake_cmd.append(f"-DARMPL_DIR={os.environ['ARMPL_DIR']}")
-
-    if benchmark_type == "accuracy_cfft":
-        target_name = "zldsp_fft_accuracy_cfft"
-    elif benchmark_type == "accuracy_rfft":
-        target_name = "zldsp_fft_accuracy_rfft"
-    elif benchmark_type == "accuracy_mid_cfft":
-        target_name = "zldsp_fft_accuracy_mid_cfft"
-    elif benchmark_type == "accuracy_mid_rfft":
-        target_name = "zldsp_fft_accuracy_mid_rfft"
-    elif benchmark_type == "throughput_cfft":
-        target_name = "zldsp_fft_throughput_cfft"
-    elif benchmark_type == "throughput_rfft":
-        target_name = "zldsp_fft_throughput_rfft"
-    elif benchmark_type == "throughput_zldsp_cfft":
-        target_name = "zldsp_fft_throughput_zldsp_cfft"
-    elif benchmark_type == "throughput_zldsp_rfft":
-        target_name = "zldsp_fft_throughput_zldsp_rfft"
-    else:
-        target_name = "zldsp_fft_benchmark"
-    build_cmd = ["cmake", "--build", ".", "--target", target_name, "--config", "Release", "-j"]
-
-    if platform.system() == "Windows":
-        vcvars = '"C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat"'
-
-        cmake_cmd_str = " ".join(cmake_cmd)
-        full_cmake_cmd = f'call {vcvars} && {cmake_cmd_str}'
-
-        build_cmd_str = " ".join(build_cmd)
-        full_build_cmd = f'call {vcvars} && {build_cmd_str}'
-
-        if to_print:
-            print(f"Configuring: {full_cmake_cmd}")
-        subprocess.run(full_cmake_cmd, capture_output=True, cwd=build_dir, check=True, shell=True)
-        if to_print:
-            print(f"Building: {full_build_cmd}")
-        subprocess.run(full_build_cmd, capture_output=True, cwd=build_dir, check=True, shell=True)
-
-        exe_name = f"{target_name}.exe"
-        return os.path.join(build_dir, exe_name)
-
-    else:
-        if to_print:
-            print(f"Configuring: {cmake_cmd}")
-        subprocess.run(cmake_cmd, capture_output=True, cwd=build_dir, check=True)
-
-        if to_print:
-            print(f"Building: {build_cmd}")
-        subprocess.run(build_cmd, capture_output=True, cwd=build_dir, check=True)
-
-        return os.path.join(build_dir, target_name)
+def build_benchmark(algorithm, benchmark_type, use_avx2=False, use_double=False,
+                    to_print=False, *, source_dir=ROOT, build_dir=None, use_sse2=False):
+    if algorithm not in ALGOS:
+        raise ValueError(f"Unknown algorithm: {algorithm}")
+    if benchmark_type not in BENCHMARKS:
+        raise ValueError(f"Unknown benchmark: {benchmark_type}")
+    if use_avx2 and use_sse2:
+        raise ValueError("AVX2 and SSE2 are mutually exclusive")
+    source_dir = Path(source_dir).resolve()
+    precision = "double" if use_double else "float"
+    isa = "avx2" if use_avx2 else "sse2" if use_sse2 else "default"
+    build_dir = Path(build_dir or ROOT / "build_fft" / f"{algorithm}-{precision}-{isa}").resolve()
+    command = ["cmake", "-S", source_dir, "-B", build_dir,
+               "-G", os.environ.get("CMAKE_GENERATOR", "Ninja"), "-DCMAKE_BUILD_TYPE=Release"]
+    for name in BENCHMARKS:
+        command.append(f"-D{name.upper()}_TEST={'ON' if name == benchmark_type else 'OFF'}")
+    for name in ALGOS:
+        command.append(f"-DENABLE_{name.upper()}={'ON' if name == algorithm else 'OFF'}")
+    command += [f"-DUSE_AVX2={'ON' if use_avx2 else 'OFF'}",
+                f"-DUSE_SSE2={'ON' if use_sse2 else 'OFF'}",
+                f"-DUSE_DOUBLE={'ON' if use_double else 'OFF'}"]
+    if platform.system() in ("Linux", "Windows"):
+        default_c, default_cxx = ("clang", "clang++") if platform.system() == "Linux" else ("clang-cl", "clang-cl")
+        command += [f"-DCMAKE_C_COMPILER={os.environ.get('CC', default_c)}",
+                    f"-DCMAKE_CXX_COMPILER={os.environ.get('CXX', default_cxx)}"]
+    if algorithm.startswith("armpl") and os.environ.get("ARMPL_DIR"):
+        command.append(f"-DARMPL_DIR={os.environ['ARMPL_DIR']}")
+    if to_print:
+        print(f"Building {benchmark_type}: {algorithm}, {precision}, {isa}", flush=True)
+    run_command(command)
+    target = f"zldsp_fft_{benchmark_type}"
+    run_command(["cmake", "--build", build_dir, "--target", target, "--config", "Release", "--parallel"])
+    filename = target + (".exe" if platform.system() == "Windows" else "")
+    for executable in (build_dir / filename, build_dir / "Release" / filename):
+        if executable.is_file():
+            return str(executable)
+    raise RuntimeError(f"Build did not produce {target} in {build_dir}")

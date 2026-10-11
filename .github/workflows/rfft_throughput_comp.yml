@@ -1,15 +1,15 @@
-name: RFFT Commit Comparison
+name: FFT Commit Comparison
 
 on:
   workflow_dispatch:
     inputs:
       n0:
-        description: First RFFT order
+        description: First FFT order
         required: true
         default: "5"
         type: string
       n1:
-        description: Last RFFT order
+        description: Last FFT order
         required: true
         default: "25"
         type: string
@@ -20,7 +20,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,11 +28,13 @@ env:
 
 jobs:
   build_and_test:
-    name: ${{ matrix.name }} Comparison
+    name: ${{ matrix.name }} ${{ matrix.fft }} Comparison
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, ubuntu-26.04-arm]
+        fft: [cfft, rfft]
         include:
           - name: Linux x86-64
             os: ubuntu-latest
@@ -52,24 +54,24 @@ jobs:
         if: runner.os == 'Linux'
         run: lscpu
 
-      - name: RFFT Comparison AVX2 Double
+      - name: FFT Comparison AVX2 Double
         if: matrix.arch == 'x86-64'
         shell: bash
         run: |
-          python -u benchmark/throughput_rfft_comp.py "${{ inputs.n0 }}" "${{ inputs.n1 }}" --repeats "${{ inputs.repeats }}" --avx2 --double
+          python -u benchmark/run.py compare ${{ matrix.fft }} "${{ inputs.n0 }}" "${{ inputs.n1 }}" --repeats "${{ inputs.repeats }}" --avx2 --double
 
-      - name: RFFT Comparison AVX2
+      - name: FFT Comparison AVX2
         if: matrix.arch == 'x86-64'
         shell: bash
         run: |
-          python -u benchmark/throughput_rfft_comp.py "${{ inputs.n0 }}" "${{ inputs.n1 }}" --repeats "${{ inputs.repeats }}" --avx2
+          python -u benchmark/run.py compare ${{ matrix.fft }} "${{ inputs.n0 }}" "${{ inputs.n1 }}" --repeats "${{ inputs.repeats }}" --avx2
 
-      - name: RFFT Comparison Double
+      - name: FFT Comparison Double
         shell: bash
         run: |
-          python -u benchmark/throughput_rfft_comp.py "${{ inputs.n0 }}" "${{ inputs.n1 }}" --repeats "${{ inputs.repeats }}" --double
+          python -u benchmark/run.py compare ${{ matrix.fft }} "${{ inputs.n0 }}" "${{ inputs.n1 }}" --repeats "${{ inputs.repeats }}" --double
 
-      - name: RFFT Comparison
+      - name: FFT Comparison
         shell: bash
         run: |
-          python -u benchmark/throughput_rfft_comp.py "${{ inputs.n0 }}" "${{ inputs.n1 }}" --repeats "${{ inputs.repeats }}"
+          python -u benchmark/run.py compare ${{ matrix.fft }} "${{ inputs.n0 }}" "${{ inputs.n1 }}" --repeats "${{ inputs.repeats }}"

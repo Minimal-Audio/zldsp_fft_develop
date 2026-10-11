@@ -1,0 +1,368 @@
+"""Build and run FFT accuracy, throughput, and paired commit comparisons."""
+
+import argparse
+import json
+import math
+import shutil
+import statistics
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+from build_config import ALGOS, ROOT, build_benchmark, get_algo_list, run_command
+
+TIME_TO_US = {"ns": 1e-3, "us": 1.0, "ms": 1e3, "s": 1e6}
+REQUIRED_SUBMODULES = ("google/benchmark", "google/highway")
+
+
+def case_keys(kind, all_apis=False):
+    if kind == "rfft":
+        cases = {("forward", "real_aos"), ("backward", "aos_real")}
+        if all_apis:
+            cases |= {("forward", "real_soa"), ("backward", "soa_real"), ("forward", "real_power")}
+        return cases
+    apis = ["aos_aos", "aos_soa", "soa_aos", "soa_soa"] if all_apis else ["aos_aos"]
+    return {(direction, api) for direction in ("forward", "backward") for api in apis}
+
+
+def parse_throughput(data, kind, n0, n1, all_apis=False):
+    """One row per order/direction/API; use median iteration time across repeats."""
+    expected = {(direction, api, order) for direction, api in case_keys(kind, all_apis)
+                for order in range(n0, n1 + 1)}
+    samples, skipped = {}, {}
+    for entry in data.get("benchmarks", []):
+        # Aggregates include percentages (CV) as well as time. Never parse them
+        # as individual timings or mix them into the repetition median.
+        if entry.get("run_type") == "aggregate":
+            continue
+        parts = entry.get("run_name", entry.get("name", "")).split("/")
+        if len(parts) != 3:
+            raise ValueError(f"Unexpected benchmark name: {entry.get('name')}")
+        key = (parts[0], parts[1], int(parts[2]))
+        if key not in expected:
+            raise ValueError(f"Unexpected benchmark case: {key}")
+        if entry.get("error_occurred"):
+            reason = entry.get("error_message", "benchmark failed")
+            if not reason.startswith("unsupported size:"):
+                raise RuntimeError(f"{key}: {reason}")
+            skipped[key] = reason
+            continue
+        if entry.get("transforms_per_iteration") != 1:
+            raise ValueError(f"{key}: expected one transform per iteration")
+        unit = entry.get("time_unit")
+        if unit not in TIME_TO_US:
+            raise ValueError(f"Unsupported benchmark time unit: {unit}")
+        try:
+            duration = float(entry["cpu_time"]) * TIME_TO_US[unit]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"{key}: invalid CPU time") from error
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError(f"{key}: CPU time must be finite and positive")
+        samples.setdefault(key, []).append(duration)
+    if skipped.keys() & samples.keys():
+        raise ValueError("A case was both measured and skipped")
+    missing = expected - samples.keys() - skipped.keys()
+    if missing:
+        raise ValueError(f"Missing benchmark cases: {sorted(missing)}")
+    rows = []
+    for direction, api, order in sorted(expected, key=lambda key: (key[2], key[0], key[1])):
+        key = (direction, api, order)
+        row = dict(order=order, direction=direction, api=api)
+        if key in skipped:
+            row.update(status="skipped", reason=skipped[key])
+        else:
+            duration = statistics.median(samples[key])
+            operations = (2.5 if kind == "rfft" else 5) * (2 ** order) * order
+            mflops = operations / duration
+            if not math.isfinite(mflops):
+                raise ValueError(f"{key}: non-finite throughput")
+            row.update(status="measured", cpu_time_us=duration, mflops=mflops,
+                       samples=len(samples[key]))
+        rows.append(row)
+    return rows
+
+
+def run_throughput(executable, kind, n0, n1, all_apis=False, repeats=3, min_time=0.1):
+    result = run_command([executable, n0, n1, "--benchmark_format=json",
+                          f"--benchmark_repetitions={repeats}", f"--benchmark_min_time={min_time}s"])
+    data = json.loads(result.stdout)
+    return parse_throughput(data, kind, n0, n1, all_apis)
+
+
+def validate_args(parser, args):
+    if not 1 <= args.n0 <= args.n1 <= 30:
+        parser.error("orders must satisfy 1 <= n0 <= n1 <= 30")
+    if args.repeats < 1:
+        parser.error("--repeats must be positive")
+    for name in ("min_time", "threshold"):
+        value = getattr(args, name, None)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            parser.error(f"--{name.replace('_', '-')} must be finite and positive")
+
+
+def save_results(args, kind, operation, rows, **metadata):
+    if args.json:
+        payload = dict(kind=kind, operation=operation, precision="double" if args.double else "float",
+                       isa="avx2" if args.avx2 else "sse2" if args.sse2 else "default",
+                       n0=args.n0, n1=args.n1, results=rows, **metadata)
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n")
+
+
+def throughput(args):
+    kind, all_apis = args.kind, args.apis
+    algorithms = get_algo_list() if args.all_libraries else args.libraries or ["zldsp"]
+    rows = []
+    print(f"{'Library':<16} {'Order':>5} {'Direction':<9} {'API':<12} {'Time (us)':>12} {'MFLOPS':>12}", flush=True)
+    for algorithm in algorithms:
+        target = f"throughput_{'zldsp_' if all_apis else ''}{kind}"
+        executable = build_benchmark(algorithm, target, args.avx2, args.double, use_sse2=args.sse2)
+        results = run_throughput(executable, kind, args.n0, args.n1, all_apis, args.repeats, args.min_time)
+        for row in results:
+            row["library"] = algorithm
+            prefix = f"{algorithm:<16} {row['order']:>5} {row['direction']:<9} {row['api']:<12}"
+            if row["status"] == "skipped":
+                print(f"{prefix} skipped: {row['reason']}")
+            else:
+                print(f"{prefix} {row['cpu_time_us']:12.6f} {row['mflops']:12.2f}")
+        rows.extend(results)
+    save_results(args, kind, "throughput", rows)
+
+
+def parse_accuracy(output, kind, order, all_apis, threshold):
+    rows = [json.loads(line) for line in output.splitlines() if line.strip()]
+    if not rows:
+        raise ValueError("Accuracy executable returned no results")
+    seen = set()
+    libraries = {row.get("library") for row in rows}
+    if all_apis and libraries != {"zldsp"}:
+        raise ValueError("Unexpected library in API accuracy results")
+    if not all_apis and (not {"fftw3_estimate", "kfr", "zldsp"} <= libraries or
+                         not libraries <= {"fftw3_estimate", "kfr", "zldsp", "vdsp", "ipp"}):
+        raise ValueError("Library accuracy must include FFTW estimate, KFR, zldsp and only optional IPP/vDSP")
+    for row in rows:
+        if row.get("order") != order or row.get("status") not in ("passed", "failed"):
+            raise ValueError(f"Invalid accuracy row: {row}")
+        key = (row["library"], row["direction"], row["api"])
+        if key in seen:
+            raise ValueError(f"Duplicate accuracy result: {key}")
+        seen.add(key)
+        for name in ("relative_rmse", "max_abs"):
+            if not math.isfinite(row[name]) or row[name] < 0:
+                raise ValueError(f"Non-finite or negative accuracy error: {key}")
+        if row["status"] == "failed" or row["relative_rmse"] > threshold:
+            raise ValueError(f"Accuracy tolerance exceeded: {row}")
+    cases = case_keys(kind, True) if all_apis else {("forward", "median"), ("backward", "median")}
+    cases = cases | {("roundtrip", "aos")}
+    expected = {(library, direction, api) for library in libraries for direction, api in cases}
+    if seen != expected:
+        raise ValueError(f"Accuracy case coverage mismatch; missing={expected - seen}, extra={seen - expected}")
+    return rows
+
+
+def accuracy(args):
+    kind, all_apis = args.kind, args.apis
+    rows = []
+    executable = build_benchmark("zldsp", f"accuracy_{'' if all_apis else 'mid_'}{kind}",
+                                 args.avx2, args.double, use_sse2=args.sse2)
+    print(f"{'Library':<16} {'Order':>5} {'Direction':<9} {'API':<12} {'Relative RMSE':>15} {'Max abs':>15}", flush=True)
+    for order in range(args.n0, args.n1 + 1):
+        result = run_command([executable, order, args.repeats, 42, args.threshold])
+        results = parse_accuracy(result.stdout, kind, order, all_apis, args.threshold)
+        for row in results:
+            print(f"{row['library']:<16} {order:>5} {row['direction']:<9} {row['api']:<12} "
+                  f"{row['relative_rmse']:15.6e} {row['max_abs']:15.6e}")
+        rows.extend(results)
+    save_results(args, kind, "accuracy", rows, threshold=args.threshold,
+                 reference="aos API" if all_apis else "component-wise library median")
+    print("All accuracy checks passed.")
+
+
+def git_output(repo, *args):
+    return run_command(["git", "-C", repo, *args]).stdout.strip()
+
+
+def repository_snapshot(repo):
+    return (git_output(repo, "rev-parse", "HEAD"),
+            git_output(repo, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"))
+
+
+def export_archive(repo, revision, destination, archive_path):
+    destination.mkdir(parents=True, exist_ok=True)
+    with archive_path.open("wb") as output:
+        result = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", revision],
+                                stdout=output, stderr=subprocess.PIPE)
+    if result.returncode:
+        raise RuntimeError(f"Cannot export {revision} from {repo}: {result.stderr.decode(errors='replace')}")
+    with tarfile.open(archive_path) as archive:
+        if hasattr(tarfile, "data_filter"):
+            archive.extractall(destination, filter="data")
+        else:
+            # Older Python versions lack the safe extraction filter. Git archives
+            # here need only regular files/directories; reject links and escapes.
+            for member in archive.getmembers():
+                target = (destination / member.name).resolve()
+                if not (member.isfile() or member.isdir()) or destination.resolve() not in target.parents:
+                    raise RuntimeError(f"Unsafe archive member: {member.name}")
+            archive.extractall(destination)
+    archive_path.unlink()
+
+
+def export_revision(repo, revision, destination, temp_root, harness):
+    export_archive(repo, revision, destination, temp_root / f"{destination.name}.tar")
+    for relative in REQUIRED_SUBMODULES:
+        entry = git_output(repo, "ls-tree", revision, "--", relative).split()
+        if len(entry) != 4 or entry[0] != "160000" or entry[1] != "commit":
+            raise RuntimeError(f"Missing submodule {relative} in {revision}")
+        submodule = repo / relative
+        if not (submodule / ".git").exists():
+            raise RuntimeError(f"Initialize {relative} before comparing commits")
+        export_archive(submodule, entry[2], destination / relative,
+                       temp_root / f"{destination.name}-{relative.replace('/', '-')}.tar")
+    # Use the same runner, build flags and case names on both revisions. Only
+    # the FFT implementation and its pinned dependencies come from each commit.
+    shutil.copy2(harness / "CMakeLists.txt", destination / "CMakeLists.txt")
+    for source in (harness / "benchmark").iterdir():
+        if source.suffix in (".cpp", ".hpp"):
+            shutil.copy2(source, destination / "benchmark" / source.name)
+
+
+def summarize_pairs(current_runs, previous_runs):
+    def index(rows):
+        if any(row["status"] != "measured" for row in rows):
+            raise ValueError("Commit comparisons require measured results for every case")
+        return {(row["order"], row["direction"], row["api"]): row for row in rows}
+    current = [index(rows) for rows in current_runs]
+    previous = [index(rows) for rows in previous_runs]
+    if not current or len(current) != len(previous):
+        raise ValueError("A comparison needs paired runs")
+    keys = current[0].keys()
+    if any(run.keys() != keys for run in current + previous):
+        raise ValueError("Compared revisions have different case coverage")
+    summary = []
+    for order, direction, api in sorted(keys):
+        key = order, direction, api
+        ratios = [old[key]["cpu_time_us"] / new[key]["cpu_time_us"] for new, old in zip(current, previous)]
+        if any(not math.isfinite(ratio) or ratio <= 0 for ratio in ratios):
+            raise ValueError("Comparison contains invalid ratios")
+        ratio = statistics.geometric_mean(ratios)
+        logs = [math.log(value) for value in ratios]
+        center = statistics.median(logs)
+        mad = statistics.median(abs(value - center) for value in logs)
+        summary.append(dict(order=order, direction=direction, api=api, throughput_ratio=ratio,
+                            change_percent=100 * (ratio - 1),
+                            median_ratio=statistics.median(ratios), mad_percent=100 * math.expm1(mad),
+                            current_us=statistics.median(run[key]["cpu_time_us"] for run in current),
+                            previous_us=statistics.median(run[key]["cpu_time_us"] for run in previous)))
+    return summary
+
+
+def compare(args):
+    kind = args.kind
+    initial = repository_snapshot(ROOT)
+    revisions = {"current": git_output(ROOT, "rev-parse", "--verify", f"{args.current}^{{commit}}"),
+                 "previous": git_output(ROOT, "rev-parse", "--verify", f"{args.previous}^{{commit}}")}
+    print(f"Current:  {revisions['current']}\nPrevious: {revisions['previous']}")
+    print("Both commits use this checkout's benchmark harness; uncommitted FFT changes are excluded.", flush=True)
+    runs = {"current": [], "previous": []}
+    with tempfile.TemporaryDirectory(prefix="zldsp-fft-compare-") as temporary:
+        temp_root = Path(temporary)
+        # Freeze the harness once so edits during a long build cannot make
+        # the two exported revisions use different measurement code.
+        harness = temp_root / "harness"
+        (harness / "benchmark").mkdir(parents=True)
+        shutil.copy2(ROOT / "CMakeLists.txt", harness / "CMakeLists.txt")
+        for source in (ROOT / "benchmark").iterdir():
+            if source.suffix in (".cpp", ".hpp"):
+                shutil.copy2(source, harness / "benchmark" / source.name)
+        executables = {}
+        target = f"throughput_{'zldsp_' if args.apis else ''}{kind}"
+        for label, revision in revisions.items():
+            source = temp_root / f"source-{label}"
+            export_revision(ROOT, revision, source, temp_root, harness)
+            print(f"Building {label}...", flush=True)
+            executables[label] = build_benchmark("zldsp", target, args.avx2, args.double,
+                                                 source_dir=source, build_dir=temp_root / f"build-{label}",
+                                                 use_sse2=args.sse2)
+        for repetition in range(args.repeats):
+            labels = ("current", "previous") if repetition % 2 == 0 else ("previous", "current")
+            print(f"Pair {repetition + 1}/{args.repeats}: {' then '.join(labels)}", flush=True)
+            for label in labels:
+                runs[label].append(run_throughput(executables[label], kind, args.n0, args.n1,
+                                                 args.apis, repeats=1, min_time=args.min_time))
+    summary = summarize_pairs(runs["current"], runs["previous"])
+    print(f"{'Order':>5} {'Direction':<9} {'API':<12} {'Current us':>12} {'Previous us':>12} {'Ratio':>9} {'Change':>9} {'MAD':>9}")
+    for row in summary:
+        print(f"{row['order']:>5} {row['direction']:<9} {row['api']:<12} {row['current_us']:12.6f} "
+              f"{row['previous_us']:12.6f} {row['throughput_ratio']:9.4f} {row['change_percent']:+8.2f}% {row['mad_percent']:8.2f}%")
+    if repository_snapshot(ROOT) != initial:
+        raise RuntimeError("Repository state changed during the comparison")
+    save_results(args, kind, "commit_comparison", summary, revisions=revisions, runs=runs,
+                 harness="current checkout", all_apis=args.apis)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="operation", required=True)
+    for operation, handler, description in (
+        ("accuracy", accuracy, "Check library median agreement or zldsp API agreement"),
+        ("throughput", throughput, "Measure libraries or zldsp APIs in both directions"),
+        ("compare", compare, "Compare throughput before/after a commit"),
+    ):
+        command = commands.add_parser(operation, help=description, description=description)
+        command.set_defaults(handler=handler)
+        command.add_argument("kind", choices=("cfft", "rfft"))
+        command.add_argument("n0", type=int, help="First order (size = 2^order)")
+        command.add_argument("n1", type=int, help="Last order, inclusive")
+        isa = command.add_mutually_exclusive_group()
+        isa.add_argument("--avx2", action="store_true")
+        isa.add_argument("--sse2", action="store_true")
+        command.add_argument("--double", action="store_true", help="Use double precision")
+        command.add_argument("--json", type=Path, help="Save structured results to this file")
+        scope = command.add_mutually_exclusive_group()
+        scope.add_argument("--apis", action="store_true", help="Compare every zldsp API")
+        if operation == "throughput":
+            scope.add_argument("--libraries", nargs="+", choices=ALGOS,
+                               help="Libraries to measure (default: zldsp)")
+            scope.add_argument("--all-libraries", action="store_true",
+                               help="Measure available libraries, including FFTW measure and estimate")
+        command.add_argument("--repeats", type=int, default=6 if operation == "compare" else 3,
+                             help={"accuracy": "Random inputs in addition to five fixed signals (default: 3)",
+                                   "throughput": "Timing repetitions per case (default: 3)",
+                                   "compare": "Paired runs, alternating which revision runs first (default: 6)"}[operation])
+        if operation == "accuracy":
+            command.add_argument("--threshold", type=float,
+                                 help="Maximum relative RMSE (default: float 2e-5, double 2e-12)")
+        else:
+            command.add_argument("--min-time", type=float, default=0.1,
+                                 help="Minimum seconds per case/repetition (default: 0.1)")
+        if operation == "compare":
+            command.add_argument("--current", default="HEAD", help="New revision (default: HEAD)")
+            command.add_argument("--previous", default="HEAD^", help="Baseline revision (default: HEAD^)")
+    args = parser.parse_args(argv)
+    if args.operation == "accuracy":
+        if args.threshold is None:
+            args.threshold = 2e-12 if args.double else 2e-5
+        if args.repeats > 1000:
+            parser.error("accuracy --repeats must not exceed 1000")
+    validate_args(parser, args)
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        args.handler(args)
+        return 0
+    except (RuntimeError, ValueError, OSError, tarfile.TarError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Benchmark interrupted.", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

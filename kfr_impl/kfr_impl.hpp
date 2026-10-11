@@ -1,8 +1,8 @@
 #pragma once
 
 #include <kfr/dft.hpp>
-#include <span>
-#include <cassert>
+#include <complex>
+#include "../benchmark/fft_support.hpp"
 
 namespace zlbenchmark {
     template <typename F>
@@ -11,12 +11,18 @@ namespace zlbenchmark {
 
     public:
         explicit KFRFFT(const size_t order) :
-            fft_plan_(1 << order) {
+            fft_plan_(fft_size(order)) {
             temp_buffer_.resize(fft_plan_.temp_size);
         }
 
         void forward(C* in_buffer, C* out_buffer) {
-            fft_plan_.execute(out_buffer, in_buffer, temp_buffer_.data());
+            fft_plan_.execute(reinterpret_cast<kfr::complex<F>*>(out_buffer),
+                              reinterpret_cast<const kfr::complex<F>*>(in_buffer), temp_buffer_.data());
+        }
+
+        void backward(C* in_buffer, C* out_buffer) {
+            fft_plan_.execute(reinterpret_cast<kfr::complex<F>*>(out_buffer),
+                              reinterpret_cast<const kfr::complex<F>*>(in_buffer), temp_buffer_.data(), true);
         }
 
     private:
@@ -30,12 +36,16 @@ namespace zlbenchmark {
 
     public:
         explicit KFRRFFT(const size_t order) :
-            fft_plan_(1 << order) {
+            fft_plan_(fft_size(order)) {
             temp_buffer_.resize(fft_plan_.temp_size);
         }
 
         void forward(const F* in_buffer, C* out_buffer) {
             fft_plan_.execute(reinterpret_cast<kfr::complex<F>*>(out_buffer), in_buffer, temp_buffer_.data());
+        }
+
+        void backward(C* in_buffer, F* out_buffer) {
+            fft_plan_.execute(out_buffer, reinterpret_cast<const kfr::complex<F>*>(in_buffer), temp_buffer_.data());
         }
 
     private:

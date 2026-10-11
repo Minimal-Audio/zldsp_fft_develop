@@ -8,6 +8,7 @@
 
 #include <ippcore.h>
 #include <ipps.h>
+#include "../benchmark/fft_support.hpp"
 
 namespace zlbenchmark {
     enum class IPPSimdLevel { Auto, SSE42, AVX2, AVX512 };
@@ -60,7 +61,7 @@ namespace zlbenchmark {
         using C = std::complex<float>;
 
     public:
-        explicit IPPFFT(const int order) : order_(order), n_(1 << order) {
+        explicit IPPFFT(const int order) : order_(order), n_(fft_size(order)) {
             int specSize = 0, initSize = 0, bufSize = 0;
 
             IppStatus status =
@@ -88,6 +89,9 @@ namespace zlbenchmark {
             }
         }
 
+        IPPFFT(const IPPFFT&) = delete;
+        IPPFFT& operator=(const IPPFFT&) = delete;
+
         ~IPPFFT() {
             if (spec_mem_) {
                 ippsFree(spec_mem_);
@@ -100,6 +104,11 @@ namespace zlbenchmark {
         void forward(C* in_buffer, C* out_buffer) {
             ippsFFTFwd_CToC_32fc(reinterpret_cast<const Ipp32fc*>(in_buffer), reinterpret_cast<Ipp32fc*>(out_buffer),
                                  spec_, work_buf_);
+        }
+
+        void backward(C* in_buffer, C* out_buffer) {
+            ippsFFTInv_CToC_32fc(reinterpret_cast<const Ipp32fc*>(in_buffer),
+                                     reinterpret_cast<Ipp32fc*>(out_buffer), spec_, work_buf_);
         }
 
     private:
@@ -117,7 +126,7 @@ namespace zlbenchmark {
         using C = std::complex<double>;
 
     public:
-        explicit IPPFFT(const int order) : order_(order), n_(1 << order) {
+        explicit IPPFFT(const int order) : order_(order), n_(fft_size(order)) {
             int specSize = 0, initSize = 0, bufSize = 0;
 
             IppStatus status =
@@ -145,6 +154,9 @@ namespace zlbenchmark {
             }
         }
 
+        IPPFFT(const IPPFFT&) = delete;
+        IPPFFT& operator=(const IPPFFT&) = delete;
+
         ~IPPFFT() {
             if (spec_mem_) {
                 ippsFree(spec_mem_);
@@ -157,6 +169,11 @@ namespace zlbenchmark {
         void forward(C* in_buffer, C* out_buffer) {
             ippsFFTFwd_CToC_64fc(reinterpret_cast<const Ipp64fc*>(in_buffer), reinterpret_cast<Ipp64fc*>(out_buffer),
                                  spec_, work_buf_);
+        }
+
+        void backward(C* in_buffer, C* out_buffer) {
+            ippsFFTInv_CToC_64fc(reinterpret_cast<const Ipp64fc*>(in_buffer),
+                                     reinterpret_cast<Ipp64fc*>(out_buffer), spec_, work_buf_);
         }
 
     private:
@@ -176,7 +193,7 @@ namespace zlbenchmark {
         using C = std::complex<float>;
 
     public:
-        explicit IPPRFFT(const int order) : order_(order), n_(1 << order) {
+        explicit IPPRFFT(const int order) : order_(order), n_(fft_size(order)) {
             int specSize = 0, initSize = 0, bufSize = 0;
             IppStatus status =
                 ippsFFTGetSize_R_32f(order_, IPP_FFT_NODIV_BY_ANY, ippAlgHintNone, &specSize, &initSize, &bufSize);
@@ -203,6 +220,9 @@ namespace zlbenchmark {
             }
         }
 
+        IPPRFFT(const IPPRFFT&) = delete;
+        IPPRFFT& operator=(const IPPRFFT&) = delete;
+
         ~IPPRFFT() {
             if (spec_mem_) {
                 ippsFree(spec_mem_);
@@ -214,6 +234,10 @@ namespace zlbenchmark {
 
         void forward(const float* in_buffer, C* out_buffer) {
             ippsFFTFwd_RToCCS_32f(in_buffer, reinterpret_cast<float*>(out_buffer), spec_, work_buf_);
+        }
+
+        void backward(const C* in_buffer, float* out_buffer) {
+            ippsFFTInv_CCSToR_32f(reinterpret_cast<const float*>(in_buffer), out_buffer, spec_, work_buf_);
         }
 
     private:
@@ -231,7 +255,7 @@ namespace zlbenchmark {
         using C = std::complex<double>;
 
     public:
-        explicit IPPRFFT(const int order) : order_(order), n_(1 << order) {
+        explicit IPPRFFT(const int order) : order_(order), n_(fft_size(order)) {
             int specSize = 0, initSize = 0, bufSize = 0;
             IppStatus status =
                 ippsFFTGetSize_R_64f(order_, IPP_FFT_NODIV_BY_ANY, ippAlgHintNone, &specSize, &initSize, &bufSize);
@@ -258,6 +282,9 @@ namespace zlbenchmark {
             }
         }
 
+        IPPRFFT(const IPPRFFT&) = delete;
+        IPPRFFT& operator=(const IPPRFFT&) = delete;
+
         ~IPPRFFT() {
             if (spec_mem_) {
                 ippsFree(spec_mem_);
@@ -269,6 +296,10 @@ namespace zlbenchmark {
 
         void forward(const double* in_buffer, C* out_buffer) {
             ippsFFTFwd_RToCCS_64f(in_buffer, reinterpret_cast<double*>(out_buffer), spec_, work_buf_);
+        }
+
+        void backward(const C* in_buffer, double* out_buffer) {
+            ippsFFTInv_CCSToR_64f(reinterpret_cast<const double*>(in_buffer), out_buffer, spec_, work_buf_);
         }
 
     private:

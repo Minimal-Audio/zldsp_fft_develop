@@ -14,160 +14,112 @@ cd zldsp_fft_develop
 git submodule update --init
 ```
 
-You may need to edit the building commands in `benchmark/build_config.py`.
+All benchmarks use one command: `python3 benchmark/run.py <accuracy|throughput|compare> <cfft|rfft> <n0> <n1>`.
+It works from any directory when invoked by its path, and caches separate builds by library, precision, and ISA under `build_fft/`.
+On Windows, run from a Visual Studio developer shell with Clang and Ninja available.
+Use `python3 benchmark/run.py --help` or a subcommand's `--help` for options.
 
-### Accuracy Benchmark
+### Accuracy
 
-#### CFFT Accuracy Benchmark
-
-Run `fftw3`, `kfr`, `zldsp`, `pffft` CFFT from order `n0` to `n1`.
-
-```console
-python3 benchmark/accuracy_mid_cfft.py <n0> <n1> <--avx2> <--double>
-```
-
-Example
-```console
-python3 benchmark/accuracy_mid_cfft.py 5 10
-Running accuracy CFFT benchmark from order 5 to 10 (10 reps each)...
-Order      kfr                fftw3              zldsp              pffft             
---------------------------------------------------------------------------------------
-5          2.39176700e-14     1.17213200e-13     3.95274100e-14     1.63440100e-13     
-6          1.64665400e-13     2.15260600e-13     1.08373000e-13     3.01948200e-13     
-7          5.78072000e-13     5.63297200e-13     4.81077900e-13     8.61865300e-13     
-8          1.05322900e-12     1.27926900e-12     8.51770200e-13     2.17439600e-12     
-9          3.05149800e-12     2.91082200e-12     2.65517300e-12     5.28153300e-12     
-10         6.62576900e-12     6.73661400e-12     6.31371100e-12     1.16500700e-11
-```
-
-#### CFFT Consistent Benchmark
-
-Run `zldsp` different CFFT forward/backward APIs from order `n0` to `n1`.
+Library agreement uses the component-wise median of **FFTW (`FFTW_ESTIMATE`), KFR, and zldsp::fft**,
+plus vDSP on Apple platforms and Intel IPP when its headers and libraries are found.
+PFFFT is excluded from accuracy comparisons. These checks establish agreement within tolerance;
+the median is not an exact mathematical oracle.
 
 ```console
-python3 benchmark/accuracy_cfft.py <n0> <n1> <--avx2> <--double>
+python3 benchmark/run.py accuracy cfft 2 20
+python3 benchmark/run.py accuracy rfft 2 20 --double
 ```
 
-Example
-```console
-python3 benchmark/accuracy_cfft.py 5 10
-Running accuracy CFFT benchmark for zldsp from order 5 to 10...
-Order      Fwd Max MSE        Bwd Max MSE        Id Max MSE        
-------------------------------------------------------------------
-5          0.00000000e+00     0.00000000e+00     4.70630500e-15    
-6          0.00000000e+00     0.00000000e+00     7.68742700e-15    
-7          0.00000000e+00     0.00000000e+00     1.11504800e-14    
-8          0.00000000e+00     0.00000000e+00     1.19794100e-14    
-9          0.00000000e+00     0.00000000e+00     1.32861400e-14    
-10         0.00000000e+00     0.00000000e+00     1.51891300e-14
-```
-
-#### RFFT Accuracy Benchmark
-
-Run `fftw3`, `kfr`, `zldsp`, `pffft` RFFT from order `n0` to `n1`.
+The API checks compare every zldsp layout with its AoS API, in both directions. RFFT also checks
+`forward_sqr_mag` separately. Both accuracy suites verify normalized forward/backward round trips.
 
 ```console
-python3 benchmark/accuracy_mid_rfft.py <n0> <n1> <--avx2> <--double>
+python3 benchmark/run.py accuracy cfft 2 20 --apis
+python3 benchmark/run.py accuracy rfft 2 20 --apis --double
 ```
 
-Example
+Each order uses zero, shifted impulse, constant, alternating-sign, and tone inputs, followed by
+three deterministic random inputs (`--repeats` changes the random count). Backward RFFT inputs
+have real DC and Nyquist bins. Results report the worst **relative RMSE** and maximum absolute
+error across inputs, separately for each library/API and direction. For an all-zero reference,
+absolute RMS replaces relative RMSE. `--threshold` sets the relative RMSE limit (default `2e-5`
+for float, `2e-12` for double); this replaces the old, size-dependent MSE threshold. Every library
+must pass, and any non-finite result or missing case fails the run.
+
+Scaling is reconciled for accuracy: zldsp RFFT backward returns half the conventional unscaled
+inverse, so its result is multiplied by 2 before comparison, and round trips use `2/N`. The other
+wrappers use `1/N` for round trips. The vDSP wrapper unpacks DC/Nyquist and removes its native
+real-forward factor of 2. Error accumulation widens values before subtraction and squaring.
+
+### Throughput
+
+Compare one library, the available libraries, or all zldsp APIs:
 
 ```console
-python3 benchmark/accuracy_mid_rfft.py 5 10
-Running accuracy RFFT benchmark from order 5 to 10 (10 reps each)...
-Order      kfr                fftw3              zldsp              pffft             
---------------------------------------------------------------------------------------
-5          7.26960800e-14     3.77433200e-14     3.38191300e-14     3.27714500e-14     
-6          1.63731400e-13     1.01401400e-13     9.75312900e-14     1.05184300e-13     
-7          3.56730700e-13     2.27370500e-13     2.42351800e-13     2.67729800e-13     
-8          1.07237800e-12     5.58322300e-13     8.09634900e-13     5.90561800e-13     
-9          1.91429100e-12     1.27614100e-12     1.43604000e-12     1.51917200e-12     
-10         5.22122600e-12     2.91316900e-12     3.52626300e-12     3.38997800e-12
+python3 benchmark/run.py throughput cfft 5 20
+python3 benchmark/run.py throughput rfft 5 20 --libraries fftw3_estimate --double
+python3 benchmark/run.py throughput cfft 5 20 --all-libraries
+python3 benchmark/run.py throughput rfft 5 20 --libraries zldsp kfr pffft vdsp
+python3 benchmark/run.py throughput cfft 5 20 --apis
+python3 benchmark/run.py throughput rfft 5 20 --apis
 ```
 
-#### RFFT Consistent Benchmark
+Throughput defaults to zldsp. `--libraries` selects one or more backends; `--all-libraries`
+selects available backends, including both FFTW measure and estimate. `--apis` measures all zldsp APIs.
+These three options are mutually exclusive.
 
-Run `zldsp` different RFFT forward/backward APIs from order `n0` to `n1`.
+Every transform is measured and reported separately as `forward` or `backward`. CFFT API coverage
+includes all four AoS/SoA input/output combinations in each direction. RFFT covers real/AoS and
+real/SoA in each direction plus forward squared magnitude.
+
+One Google Benchmark iteration performs **one transform**. Plans and allocations are outside
+the timing region. Inputs are bounded and reused, never fed from the previous output. If an API
+modifies its input, restoration is outside the timing region. Outputs are checked for finiteness
+before and after timing. Packing conversions and scaling performed by external wrappers are part
+of the measured API cost; zldsp's native inverse scale is preserved in throughput runs.
+
+The reported time is the median CPU time across `--repeats` runs (default 3).
+`--min-time` controls minimum seconds per case/repetition (default 0.1). MFLOPS uses the conventional
+estimate `5*N*log2(N)` for CFFT or `2.5*N*log2(N)` for RFFT; it is not an instruction count.
+For squared magnitude, the same RFFT estimate is used, so its time is the more useful comparison.
+Unsupported PFFFT sizes are explicitly marked as skipped, never reported as zero-time work.
+Other build/execution failures stop the run.
+
+### Before/after a commit
 
 ```console
-python3 benchmark/accuracy_rfft.py <n0> <n1> <--avx2> <--double>
+python3 benchmark/run.py compare cfft 5 20 --repeats 6
+python3 benchmark/run.py compare rfft 5 20 --apis --double --json comparison.json
 ```
 
-Example
-```console
-python3 benchmark/accuracy_rfft.py 5 10
-Running accuracy RFFT benchmark for zldsp from order 5 to 10...
-Order      Fwd Max MSE        Bwd Max MSE        Id Max MSE        
-------------------------------------------------------------------
-5          0.00000000e+00     0.00000000e+00     5.30825400e-15    
-6          0.00000000e+00     0.00000000e+00     7.23466400e-15    
-7          0.00000000e+00     0.00000000e+00     5.84959600e-15    
-8          0.00000000e+00     0.00000000e+00     8.47672600e-15    
-9          0.00000000e+00     0.00000000e+00     8.37233100e-15    
-10         0.00000000e+00     0.00000000e+00     9.01347400e-15
-```
+By default these compare `HEAD` with `HEAD^`; use `--current <ref>` and `--previous <ref>` to choose
+other commits. Both revisions are exported into temporary directories, with each revision's pinned
+Highway and Google Benchmark dependencies. The **same harness and CMake configuration from the current
+checkout** run against both FFT implementations, preventing changes in measurement methodology from
+appearing as speedups. Uncommitted FFT changes are excluded. No checkout, reset, or fetch is performed;
+the requested commits and submodule objects must already exist locally.
 
-### Throughput Benchmark
+Runs alternate which revision is measured first. The summary reports each direction/API independently,
+with the geometric mean of paired throughput ratios (`current / previous`, greater than 1 is faster),
+percentage change, and the median absolute deviation of log ratios as a percentage. Results remain
+sensitive to system load and frequency changes; small differences need repeated measurements.
 
-#### CFFT Throughput Benchmark
+### Options and dependencies
 
-Run `<algorithm>` CFFT throughput benchmark from order `n0` to `n1`.
+All three commands accept `--double`, `--avx2` or `--sse2`, and `--json <file>` for structured results.
+Orders must satisfy `1 <= n0 <= n1 <= 30`; the practical maximum depends on available memory.
 
-```console
-python3 benchmark/throughput_cfft.py <n0> <n1> <algorithm> <--avx2> <--double>
-```
-
-Example
-```console
-python3 benchmark/throughput_cfft.py 5 10 zldsp
-Running CFFT throughput benchmark for zldsp from order 5 to 10...
-Order      Time (us)       Throughput (MFLOPS) 
----------------------------------------------
-5          0.0189          42283.9468          
-6          0.0281          68408.6276          
-7          0.0635          70521.8659          
-8          0.1303          78574.4614          
-9          0.2998          76850.4027          
-10         0.6359          80514.4208
-```
-
-#### RFFT Throughput Benchmark
-
-Run `<algorithm>` RFFT throughput benchmark from order `n0` to `n1`.
-
-```console
-python3 benchmark/throughput_rfft.py <n0> <n1> <algorithm> <--avx2> <--double>
-```
-
-Example
-```console
-python3 benchmark/throughput_rfft.py 5 10 zldsp
-Running RFFT throughput benchmark for zldsp from order 5 to 10...
-Order      Time (us)       Throughput (MFLOPS) 
----------------------------------------------
-5          0.0111          36143.1067          
-6          0.0221          43344.2067          
-7          0.0406          55150.3424          
-8          0.0840          60944.2159          
-9          0.1705          67558.5149          
-10         0.3770          67910.7675
-```
-
-### Algorithms
-
-- `zldsp`
-
-External libraries:
-
-- `fftw3` / `fftw3_estimate`
-- `kfr`
-- `pffft`
-- `ipp`
-- `vdsp`
-- `armpl` / `armpl_estimate`
-
-ArmPL benchmarks require an Arm Performance Libraries installation. Set `ARMPL_DIR` to its installation directory before running the benchmark scripts.
-`armpl` uses `FFTW_MEASURE`; `armpl_estimate` uses `FFTW_ESTIMATE`.
+Supported throughput backends: `zldsp`, `fftw3`, `fftw3_estimate`, `kfr`, `pffft`, `vdsp`,
+`vdsp_stride_2` (CFFT uses interleaved stride 2), `ipp`, `armpl`, `armpl_estimate`.
+Set `ARMPL_DIR` for Arm Performance Libraries and `IPP_ROOT` for an IPP installation outside the
+existing NuGet locations. `armpl`/`fftw3` use measure plans; the `_estimate` variants use estimate plans.
+The existing CMake `ACCURACY_*_TEST` and `THROUGHPUT_*_TEST` target options remain available. A build
+selects at most one `ENABLE_<library>` throughput backend; library accuracy always uses the set above.
+CMake builds the variants from just `benchmark/accuracy.cpp` and `benchmark/throughput.cpp`, selecting
+the FFT type and API coverage with compile definitions.
+CMake options `ACCURACY_ENABLE_IPP=OFF` and `ACCURACY_ENABLE_VDSP=OFF` exclude optional SDKs from accuracy.
+`BENCHMARK_SELF_TESTS=ON` registers enabled accuracy executables and Python result-parser checks in CTest.
 
 ## Use `zldsp::fft` in another project
 

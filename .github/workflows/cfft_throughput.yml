@@ -59,20 +59,24 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          python -u benchmark/throughput_all_cfft.py 5 25 --avx2 --double
+          python -u benchmark/run.py throughput cfft 5 25 --all-libraries --avx2 --double
+          python -u benchmark/run.py throughput cfft 5 25 --apis --avx2 --double
 
       - name: CFFT Throughput Test AVX2 (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          python -u benchmark/throughput_all_cfft.py 5 25 --avx2
+          python -u benchmark/run.py throughput cfft 5 25 --all-libraries --avx2
+          python -u benchmark/run.py throughput cfft 5 25 --apis --avx2
 
       - name: CFFT Throughput Test Double
         shell: bash
         run: |
-          python -u benchmark/throughput_all_cfft.py 5 25 --double
+          python -u benchmark/run.py throughput cfft 5 25 --all-libraries --double
+          python -u benchmark/run.py throughput cfft 5 25 --apis --double
 
       - name: CFFT Throughput Test
         shell: bash
         run: |
-          python -u benchmark/throughput_all_cfft.py 5 25
+          python -u benchmark/run.py throughput cfft 5 25 --all-libraries
+          python -u benchmark/run.py throughput cfft 5 25 --apis
