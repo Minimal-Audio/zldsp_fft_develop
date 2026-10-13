@@ -70,6 +70,25 @@ python3 benchmark/run.py throughput rfft 5 20 --apis
   - `--apis`: Measure all `zldsp` forward/backward AoS/SoA layouts, `forward_sqr_mag`, and fused vs. separate `convolve`.
 - **Metrics**: Reports nominal **MFLOPS** from the median single-call time across `--repeats` runs (`--min-time` defaults to `0.1`s; `5*N*log2(N)` for CFFT, `2.5*N*log2(N)` for RFFT, and `5*N*log2(N) + 3*N` or `5*N*log2(N) + N` for complex or real RFFT convolution).
 
+### RFFT output reuse
+
+Large RFFTs reuse disjoint caller output buffers for intermediate results. Forward SoA transforms write the CFFT result into the two output planes and post-process them in place. Backward AoS and SoA transforms use the real output as temporary SoA storage, consume it into the internal macro workspace, then write the final real result. Small transforms and overlapping input/output buffers use the existing workspace path. Forward AoS, squared magnitudes, convolution, normalization, and workspace allocation are unchanged.
+
+Build the focused validation and an optional comparison of both buffer policies:
+
+```console
+cmake -S . -B build_fft/output-reuse -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DOUTPUT_REUSE_CHECK=ON -DOUTPUT_REUSE_THROUGHPUT_TEST=ON -DBENCHMARK_SELF_TESTS=ON
+cmake --build build_fft/output-reuse
+ctest --test-dir build_fft/output-reuse --output-on-failure
+build_fft/output-reuse/zldsp_fft_output_reuse_throughput 18 \
+  --benchmark_repetitions=5 --benchmark_enable_random_interleaving=true
+```
+
+Validation always checks both precisions, including small orders, the local Stockham/hybrid boundary, multiple macro stages, unaligned buffers, overlaps, input preservation, guard regions, and an independent impulse spectrum. Pass explicit orders (`1` through `24`) to `zldsp_fft_output_reuse_check` to select sizes. Add `-DASAN_TEST=ON` to instrument the validation with AddressSanitizer; use a separate build directory for timing.
+
+The throughput executable keeps the same FFT object and buffers for `reuse:0` (workspace) and `reuse:1` (output reuse). Add `-DUSE_DOUBLE=ON` for double-precision timing. Only this executable enables the runtime comparison switch; normal builds always enable output reuse when eligible. Choose an order large enough to use the hybrid path on the test machine.
+
 ### Before/after a commit
 
 ```console
