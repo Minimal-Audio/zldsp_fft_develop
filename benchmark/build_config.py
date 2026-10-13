@@ -39,7 +39,8 @@ def run_command(command, cwd=None):
 
 
 def build_benchmark(algorithm, benchmark_type, use_avx2=False, use_double=False,
-                    to_print=False, *, source_dir=ROOT, build_dir=None, use_sse2=False):
+                    to_print=False, *, source_dir=ROOT, build_dir=None, use_sse2=False,
+                    artifacts_dir=None):
     if algorithm not in ALGOS:
         raise ValueError(f"Unknown algorithm: {algorithm}")
     if benchmark_type not in BENCHMARKS:
@@ -49,7 +50,10 @@ def build_benchmark(algorithm, benchmark_type, use_avx2=False, use_double=False,
     source_dir = Path(source_dir).resolve()
     precision = "double" if use_double else "float"
     isa = "avx2" if use_avx2 else "sse2" if use_sse2 else "default"
-    build_dir = Path(build_dir or ROOT / "build_fft" / f"{algorithm}-{precision}-{isa}").resolve()
+    if build_dir is None:
+        artifacts_dir = ROOT / "build_fft" if artifacts_dir is None else Path(artifacts_dir).expanduser()
+        build_dir = artifacts_dir / f"{algorithm}-{precision}-{isa}"
+    build_dir = Path(build_dir).resolve()
     command = ["cmake", "-S", source_dir, "-B", build_dir,
                "-G", os.environ.get("CMAKE_GENERATOR", "Ninja"), "-DCMAKE_BUILD_TYPE=Release"]
     for name in BENCHMARKS:

@@ -245,7 +245,8 @@ def throughput(args):
     for algorithm in algorithms:
         print(f"Measuring {kind.upper()} {algorithm}, orders {args.n0}-{args.n1}...", file=sys.stderr, flush=True)
         target = f"throughput_{'zldsp_' if all_apis else ''}{kind}"
-        executable = build_benchmark(algorithm, target, args.avx2, args.double, use_sse2=args.sse2)
+        executable = build_benchmark(algorithm, target, args.avx2, args.double, use_sse2=args.sse2,
+                                     artifacts_dir=args.artifacts_dir)
         results = run_throughput(executable, kind, args.n0, args.n1, all_apis, args.repeats, args.min_time)
         for row in results:
             row["library"] = algorithm
@@ -291,7 +292,7 @@ def accuracy(args):
     scope = "zldsp APIs" if all_apis else "library agreement"
     print(f"Checking {kind.upper()} {scope}, orders {args.n0}-{args.n1}...", file=sys.stderr, flush=True)
     executable = build_benchmark("zldsp", f"accuracy_{'' if all_apis else 'mid_'}{kind}",
-                                 args.avx2, args.double, use_sse2=args.sse2)
+                                 args.avx2, args.double, use_sse2=args.sse2, artifacts_dir=args.artifacts_dir)
     for order in range(args.n0, args.n1 + 1):
         result = run_command([executable, order, args.repeats, 42, args.threshold])
         results = parse_accuracy(result.stdout, kind, order, all_apis, args.threshold)
@@ -393,7 +394,9 @@ def compare(args):
     print(f"Current:  {revisions['current']}\nPrevious: {revisions['previous']}")
     print("Both commits use this checkout's benchmark harness; uncommitted FFT changes are excluded.", flush=True)
     runs = {"current": [], "previous": []}
-    with tempfile.TemporaryDirectory(prefix="zldsp-fft-compare-") as temporary:
+    if args.artifacts_dir is not None:
+        args.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="zldsp-fft-compare-", dir=args.artifacts_dir) as temporary:
         temp_root = Path(temporary)
         # Freeze the harness once so edits during a long build cannot make
         # the two exported revisions use different measurement code.
@@ -446,6 +449,9 @@ def parse_args(argv=None):
         isa.add_argument("--avx2", action="store_true")
         isa.add_argument("--sse2", action="store_true")
         command.add_argument("--double", action="store_true", help="Use double precision")
+        command.add_argument("--artifacts-dir", type=Path, metavar="DIR",
+                             help="Root for build artifacts and temporary comparison files "
+                                  "(default: <repo>/build_fft for accuracy/throughput, system temp for compare)")
         command.add_argument("--json", type=Path, help="Save structured results to this file")
         scope = command.add_mutually_exclusive_group()
         scope.add_argument("--apis", action="store_true", help="Compare every zldsp API")
@@ -476,6 +482,8 @@ def parse_args(argv=None):
         if args.repeats > 1000:
             parser.error("accuracy --repeats must not exceed 1000")
     validate_args(parser, args)
+    if args.artifacts_dir is not None:
+        args.artifacts_dir = args.artifacts_dir.expanduser().resolve()
     return args
 
 

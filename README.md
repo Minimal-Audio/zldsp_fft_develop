@@ -21,11 +21,23 @@ python3 benchmark/run.py <accuracy|throughput|compare> <cfft|rfft> <n0> <n1> [op
 ```
 
 Common options across subcommands:
+
 - `--double`: Use `double` precision (default: `float`).
 - `--avx2` / `--sse2`: Select x86 SIMD target (x86 default: SSE4.2; ARM uses NEON).
 - `--apis`: Test all `zldsp::fft` APIs and layouts (AoS/SoA, `forward_sqr_mag`, and RFFT `convolve`).
 - `--repeats <k>`: Random input count for `accuracy` (default: `3`), timing repetitions for `throughput` (default: `3`), or paired runs for `compare` (default: `6`).
+- `--artifacts-dir <dir>`: Choose the root for build artifacts and temporary comparison files (default: `<repo>/build_fft` for `accuracy`/`throughput`, system temporary directory for `compare`). Created if needed; relative paths are resolved from your current directory, and `~` is expanded.
 - `--json <file>`: Save full structured results to a JSON file (a compact JSON summary is always printed to stdout).
+
+For a checkout shared across PACE machines, use a separate artifacts directory per machine:
+
+```console
+python3 benchmark/run.py throughput cfft 5 20 \
+  --artifacts-dir "build_fft/$(hostname)" \
+  --json "build_fft/$(hostname)/throughput.json"
+```
+
+You can also point `--artifacts-dir` to a scratch directory. Builds are separated by library, precision, and SIMD target within it. `compare` creates a unique temporary workspace there and removes it after the run. Choose the result file separately with `--json`.
 
 ### Accuracy
 
