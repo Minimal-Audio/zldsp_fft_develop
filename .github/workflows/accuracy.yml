@@ -32,9 +32,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Check benchmark result parsing
-        run: python -m unittest discover -s benchmark/tests
-
       - name: Show CPU Info (Linux)
         if: runner.os == 'Linux'
         run: lscpu

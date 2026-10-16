@@ -35,3 +35,6 @@ build_accuracy
 build_throughput
 
 EXPERIMENTS.md
+pace_fft.txt
+chat.md
+chat*.md

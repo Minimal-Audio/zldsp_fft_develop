@@ -38,9 +38,17 @@ def run_command(command, cwd=None):
     return result
 
 
+def benchmark_executable(build_dir, target):
+    filename = target + (".exe" if platform.system() == "Windows" else "")
+    for executable in (build_dir / filename, build_dir / "Release" / filename):
+        if executable.is_file():
+            return str(executable)
+    raise RuntimeError(f"Missing {target} in {build_dir}; build it before using --skip-build")
+
+
 def build_benchmark(algorithm, benchmark_type, use_avx2=False, use_double=False,
                     to_print=False, *, source_dir=ROOT, build_dir=None, use_sse2=False,
-                    artifacts_dir=None):
+                    artifacts_dir=None, skip_build=False):
     if algorithm not in ALGOS:
         raise ValueError(f"Unknown algorithm: {algorithm}")
     if benchmark_type not in BENCHMARKS:
@@ -54,6 +62,9 @@ def build_benchmark(algorithm, benchmark_type, use_avx2=False, use_double=False,
         artifacts_dir = ROOT / "build_fft" if artifacts_dir is None else Path(artifacts_dir).expanduser()
         build_dir = artifacts_dir / f"{algorithm}-{precision}-{isa}"
     build_dir = Path(build_dir).resolve()
+    target = f"zldsp_fft_{benchmark_type}"
+    if skip_build:
+        return benchmark_executable(build_dir, target)
     command = ["cmake", "-S", source_dir, "-B", build_dir,
                "-G", os.environ.get("CMAKE_GENERATOR", "Ninja"), "-DCMAKE_BUILD_TYPE=Release"]
     for name in BENCHMARKS:
@@ -72,10 +83,5 @@ def build_benchmark(algorithm, benchmark_type, use_avx2=False, use_double=False,
     if to_print:
         print(f"Building {benchmark_type}: {algorithm}, {precision}, {isa}", flush=True)
     run_command(command)
-    target = f"zldsp_fft_{benchmark_type}"
     run_command(["cmake", "--build", build_dir, "--target", target, "--config", "Release", "--parallel"])
-    filename = target + (".exe" if platform.system() == "Windows" else "")
-    for executable in (build_dir / filename, build_dir / "Release" / filename):
-        if executable.is_file():
-            return str(executable)
-    raise RuntimeError(f"Build did not produce {target} in {build_dir}")
+    return benchmark_executable(build_dir, target)

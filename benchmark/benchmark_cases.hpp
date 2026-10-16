@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <hwy/highway.h>
 
 #include "benchmark_include.hpp"
 
@@ -234,10 +235,43 @@ namespace zlbenchmark {
                     throw std::runtime_error("convolve API is unavailable in this revision");
                 }
             } else {
+                namespace hn = hwy::HWY_STATIC_NAMESPACE;
                 auto values = work.data();
                 const auto kernel = kernel_data();
                 fft.forward(time.data(), values);
-                for (size_t k = 0; k < work.size(); ++k) {
+
+                // Use the FFT's static SIMD target, with layout-specific memory access.
+                const hn::ScalableTag<F> d;
+                const size_t lanes = hn::Lanes(d);
+                size_t k = 0;
+                for (; k + lanes <= work.size(); k += lanes) {
+                    if constexpr (real_kernel) {
+                        const auto h = hn::LoadU(d, kernel + k);
+                        hn::StoreU(hn::Mul(hn::LoadU(d, values[0] + k), h), d, values[0] + k);
+                        hn::StoreU(hn::Mul(hn::LoadU(d, values[1] + k), h), d, values[1] + k);
+                    } else {
+                        hn::Vec<decltype(d)> r, i, hr, hi;
+                        if constexpr (soa) {
+                            r = hn::LoadU(d, values[0] + k);
+                            i = hn::LoadU(d, values[1] + k);
+                            hr = hn::LoadU(d, kernel[0] + k);
+                            hi = hn::LoadU(d, kernel[1] + k);
+                        } else {
+                            hn::LoadInterleaved2(d, reinterpret_cast<const F*>(values + k), r, i);
+                            hn::LoadInterleaved2(d, reinterpret_cast<const F*>(kernel + k), hr, hi);
+                        }
+                        const auto product_r = hn::NegMulAdd(i, hi, hn::Mul(r, hr));
+                        const auto product_i = hn::MulAdd(i, hr, hn::Mul(r, hi));
+                        if constexpr (soa) {
+                            hn::StoreU(product_r, d, values[0] + k);
+                            hn::StoreU(product_i, d, values[1] + k);
+                        } else {
+                            hn::StoreInterleaved2(product_r, product_i, d, reinterpret_cast<F*>(values + k));
+                        }
+                    }
+                }
+                // N/2 + 1 bins need a tail; also handle transforms smaller than a vector.
+                for (; k < work.size(); ++k) {
                     if constexpr (real_kernel) {
                         values[0][k] *= kernel[k];
                         values[1][k] *= kernel[k];

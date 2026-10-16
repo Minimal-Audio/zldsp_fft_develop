@@ -131,6 +131,9 @@ namespace zlbenchmark {
             baseline.original_spectrum = test.original_spectrum;
             baseline.reset();
             baseline.execute();
+            if (!baseline.input_unchanged() || !baseline.kernel_unchanged()) {
+                throw std::runtime_error("separate convolve modified input or spectrum");
+            }
             test.execute();
             const auto expected = case_output(baseline);
             errors.add(expected, case_output(test));
@@ -179,7 +182,11 @@ namespace zlbenchmark {
 
         random_kernel(seed + 300);
         run();
-        if (n <= 64) errors.add(reference_convolve(test.original, test.original_spectrum), case_output(test));
+        if (n <= 64) {
+            const auto reference = reference_convolve(test.original, test.original_spectrum);
+            errors.add(reference, case_output(test));
+            errors.add(reference, case_output(baseline));
+        }
 
         // Offset every buffer by one element to exercise unaligned AoS/SoA/real
         // loads and stores. Prefix sentinels and ASan catch boundary mistakes.

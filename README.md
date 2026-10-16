@@ -1,12 +1,12 @@
-# zldsp::fft(develop)
+# zldsp::fft (develop)
 
-zldsp::fft(develop) aims at FFT implementation and analysis.
+Development, benchmarking, and analysis repository for `zldsp::fft`.
 
-If you want to use zldsp::fft, please refer to [zldsp_fft](https://github.com/ZL-Audio/zldsp_fft).
+If you want to use `zldsp::fft` in your project, please refer to [zldsp_fft](https://github.com/ZL-Audio/zldsp_fft).
 
 ## Usage
 
-Please make sure `Clang` (`AppleClang 16+` or `LLVM/Clang 17+`), `CMake` (`3.20+`), and `Ninja` are installed and configured on your OS. On Windows, run from a Visual Studio developer shell.
+Requirements: `Clang` (`AppleClang 16+` or `LLVM/Clang 17+`), `CMake` (`3.20+`), and `Ninja`. On Windows, run from a Visual Studio developer shell.
 
 ```console
 git clone https://github.com/ZL-Audio/zldsp_fft_develop
@@ -20,24 +20,14 @@ All benchmarks run through a single CLI (`1 <= n0 <= n1 <= 30`, FFT size `N = 2^
 python3 benchmark/run.py <accuracy|throughput|compare> <cfft|rfft> <n0> <n1> [options]
 ```
 
-Common options across subcommands:
+### Common Options
 
 - `--double`: Use `double` precision (default: `float`).
-- `--avx2` / `--sse2`: Select x86 SIMD target (x86 default: SSE4.2; ARM uses NEON).
-- `--apis`: Test all `zldsp::fft` APIs and layouts (AoS/SoA, `forward_sqr_mag`, and RFFT `convolve`).
-- `--repeats <k>`: Random input count for `accuracy` (default: `3`), timing repetitions for `throughput` (default: `3`), or paired runs for `compare` (default: `6`).
-- `--artifacts-dir <dir>`: Choose the root for build artifacts and temporary comparison files (default: `<repo>/build_fft` for `accuracy`/`throughput`, system temporary directory for `compare`). Created if needed; relative paths are resolved from your current directory, and `~` is expanded.
-- `--json <file>`: Save full structured results to a JSON file (a compact JSON summary is always printed to stdout).
-
-For a checkout shared across PACE machines, use a separate artifacts directory per machine:
-
-```console
-python3 benchmark/run.py throughput cfft 5 20 \
-  --artifacts-dir "build_fft/$(hostname)" \
-  --json "build_fft/$(hostname)/throughput.json"
-```
-
-You can also point `--artifacts-dir` to a scratch directory. Builds are separated by library, precision, and SIMD target within it. `compare` creates a unique temporary workspace there and removes it after the run. Choose the result file separately with `--json`.
+- `--avx2` / `--sse2`: Select x86 SIMD target (default: SSE4.2 on x86; ARM uses NEON).
+- `--apis`: Test all `zldsp::fft` layouts and APIs (AoS/SoA, `forward_sqr_mag`, RFFT `convolve`).
+- `--repeats <k>`: Repetition count for accuracy inputs (`3`), throughput measurements (`3`), or paired comparison runs (`6`).
+- `--artifacts-dir <dir>`: Directory for build artifacts and temporary files (default: `<repo>/build_fft`).
+- `--json <file>`: Save detailed results to a JSON file.
 
 ### Accuracy
 
@@ -48,10 +38,10 @@ python3 benchmark/run.py accuracy cfft 2 20 --apis
 python3 benchmark/run.py accuracy rfft 2 20 --apis --double
 ```
 
-- **Library agreement (default)**: Compares `fftw3_estimate`, `kfr`, and `zldsp` (plus `vdsp` on macOS and `ipp` when installed) against their component-wise median, and verifies normalized forward/backward round trips.
-- **API consistency (`--apis`)**: Compares all `zldsp` AoS/SoA layouts, `forward_sqr_mag`, and `convolve` overloads against the AoS API, separate forward/multiply/backward execution, and a small-size direct DFT reference.
-- **Metrics**: Reports worst **relative RMSE** and **maximum absolute error** across five deterministic signals and `--repeats` random inputs. Fails if relative RMSE exceeds `--threshold` (default: `2e-5` for `float`, `2e-12` for `double`).
-- **Scaling**: `zldsp` backward RFFT returns half the conventional unscaled inverse (`(N/2) * input`), so `zldsp` RFFT round trips scale by `2/N` (`1/N` for CFFT and external wrappers).
+- **Library agreement (default)**: Compares `fftw3_estimate`, `kfr`, and `zldsp` (plus `vdsp` on macOS and `ipp` if installed) against their component-wise median, and verifies normalized round trips.
+- **API consistency (`--apis`)**: Validates all `zldsp` AoS/SoA layouts, `forward_sqr_mag`, and `convolve` overloads against the reference AoS path and direct DFT.
+- **Metrics**: Reports worst relative RMSE and maximum absolute error across deterministic and random test signals. Fails if relative RMSE exceeds `--threshold` (`2e-5` for `float`, `2e-12` for `double`).
+- **Scaling**: `zldsp` backward RFFT yields `(N/2) * input`, so RFFT round trips scale by `2/N` (`1/N` for CFFT).
 
 ### Throughput
 
@@ -63,18 +53,21 @@ python3 benchmark/run.py throughput cfft 5 20 --all-libraries --double
 python3 benchmark/run.py throughput rfft 5 20 --apis
 ```
 
-- **Target selection** (mutually exclusive, default: `zldsp`):
-  - `--libraries <lib ...>`: Measure specific backends.
-  - `--standard-libraries`: Measure available backends (`zldsp`, `kfr`, `pffft`, plus `vdsp`, `ipp`, `armpl`, `armpl_estimate` when available).
+- **Target selection** (default: `zldsp`):
+  - `--libraries <lib ...>`: Benchmark specific backends.
+  - `--standard-libraries`: Benchmark available standard backends (`zldsp`, `kfr`, `pffft`, plus `vdsp`, `ipp`, `armpl`, `armpl_estimate` when installed).
   - `--all-libraries`: `--standard-libraries` plus `fftw3` and `fftw3_estimate`.
-  - `--apis`: Measure all `zldsp` forward/backward AoS/SoA layouts, `forward_sqr_mag`, and fused vs. separate `convolve`.
-- **Metrics**: Reports nominal **MFLOPS** from the median single-call time across `--repeats` runs (`--min-time` defaults to `0.1`s; `5*N*log2(N)` for CFFT, `2.5*N*log2(N)` for RFFT, and `5*N*log2(N) + 3*N` or `5*N*log2(N) + N` for complex or real RFFT convolution).
+  - `--apis`: Benchmark all `zldsp` AoS/SoA layouts, `forward_sqr_mag`, and fused vs. separate convolution.
+- **Measurement**: Plans and buffers are reused across repetitions, timing only transform execution. Memory is freed between transform sizes to keep peak usage low.
+- **Duration**: By default, measurement time scales exponentially from `--min-time0` (0.5s at `n0`) to `--min-time1` (5s at `n1`) per repetition. Use `--min-time <seconds>` for a fixed duration across all orders.
+- **Builds**: Selected backends are compiled before benchmarking. Use `--build-only` to compile without measuring, or `--skip-build` to benchmark existing binaries.
+- **Metrics**: Reports nominal **MFLOPS** from median single-call times across `--repeats` runs (`5*N*log2(N)` for CFFT, `2.5*N*log2(N)` for RFFT).
 
-### RFFT output reuse
+### RFFT Output Reuse
 
-Large RFFTs reuse disjoint caller output buffers for intermediate results. Forward SoA transforms write the CFFT result into the two output planes and post-process them in place. Backward AoS and SoA transforms use the real output as temporary SoA storage, consume it into the internal macro workspace, then write the final real result. Small transforms and overlapping input/output buffers use the existing workspace path. Forward AoS, squared magnitudes, convolution, normalization, and workspace allocation are unchanged.
+Large RFFTs reuse disjoint caller output buffers for intermediate computation to reduce workspace memory. Small transforms and overlapping buffers fall back to the dedicated internal workspace automatically.
 
-Build the focused validation and an optional comparison of both buffer policies:
+Run validation tests and optional throughput comparisons:
 
 ```console
 cmake -S . -B build_fft/output-reuse -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -85,25 +78,23 @@ build_fft/output-reuse/zldsp_fft_output_reuse_throughput 18 \
   --benchmark_repetitions=5 --benchmark_enable_random_interleaving=true
 ```
 
-Validation always checks both precisions, including small orders, the local Stockham/hybrid boundary, multiple macro stages, unaligned buffers, overlaps, input preservation, guard regions, and an independent impulse spectrum. Pass explicit orders (`1` through `24`) to `zldsp_fft_output_reuse_check` to select sizes. Add `-DASAN_TEST=ON` to instrument the validation with AddressSanitizer; use a separate build directory for timing.
+Pass explicit orders (`1` to `24`) to `zldsp_fft_output_reuse_check` to test specific sizes, or add `-DASAN_TEST=ON` to enable AddressSanitizer.
 
-The throughput executable keeps the same FFT object and buffers for `reuse:0` (workspace) and `reuse:1` (output reuse). Add `-DUSE_DOUBLE=ON` for double-precision timing. Only this executable enables the runtime comparison switch; normal builds always enable output reuse when eligible. Choose an order large enough to use the hybrid path on the test machine.
-
-### Before/after a commit
+### Comparing Git Revisions
 
 ```console
 python3 benchmark/run.py compare cfft 5 20 --repeats 6
 python3 benchmark/run.py compare rfft 5 20 --apis --current HEAD --previous HEAD^
 ```
 
-Exports `--current` (default: `HEAD`) and `--previous` (default: `HEAD^`) into temporary directories using the current checkout's benchmark harness, alternates execution order across `--repeats` paired runs, and reports median times, geometric-mean throughput ratio (`current / previous`, `> 1` is faster), percentage change, and MAD.
+Compares performance between two git revisions (`--current`, default `HEAD`; `--previous`, default `HEAD^`). Alternates execution across `--repeats` paired runs and reports median times, speedup ratios (`> 1` is faster), percentage changes, and MAD.
 
 ### Supported Backends
 
 `zldsp`, `fftw3`, `fftw3_estimate`, `kfr`, `pffft`, `vdsp`, `vdsp_stride_2`, `ipp`, `armpl`, `armpl_estimate`.
 
 - `fftw3` and `armpl` use `FFTW_MEASURE`; `*_estimate` variants use `FFTW_ESTIMATE`.
-- Set `ARMPL_DIR` for Arm Performance Libraries, and `IPP_ROOT` for Intel IPP installations outside default NuGet paths.
+- Set `ARMPL_DIR` for Arm Performance Libraries, and `IPP_ROOT` for Intel IPP installations outside default paths.
 
 ## Use `zldsp::fft` in another project
 
@@ -113,7 +104,7 @@ Exports `--current` (default: `HEAD`) and `--previous` (default: `HEAD^`) into t
 target_compile_definitions(my_static_target PRIVATE HWY_COMPILE_ONLY_STATIC)
 ```
 
-Use the compiler's architecture option to select an SSE, AVX2, or NEON static target.
+Use compiler flags to select a static SIMD target:
 
 | SIMD Target | GCC/Clang                         | MSVC             |
 | ----------- | --------------------------------- | ---------------- |
@@ -122,25 +113,25 @@ Use the compiler's architecture option to select an SSE, AVX2, or NEON static ta
 | AVX2        | `-march=x86-64-v3 -maes -mpclmul` | `/arch:AVX2`     |
 | NEON        | `-march=armv8-a+simd`             | `/arch:armv8.0`  |
 
-See [`static_dispatch_caller`](examples/static_dispatch_caller.cpp) for CFFT and RFFT static dispatch examples.
+See [`static_dispatch_caller`](examples/static_dispatch_caller.cpp) for CFFT and RFFT examples.
 
 ### Caller-owned Dynamic Dispatch
 
-For example, an x86 application can enable only SSE2 and AVX2:
+An x86 application can restrict dynamic targets (for example, enabling only SSE2 and AVX2):
 
 ```cmake
 target_compile_definitions(my_dynamic_target PRIVATE "HWY_DISABLED_TARGETS=~(HWY_SSE2|HWY_AVX2)")
 ```
 
-Compile this target for the oldest supported baseline (for example, `-march=x86-64` for SSE2).
+Compile this target for the oldest supported baseline (e.g. `-march=x86-64` for SSE2).
 
-See [`wrapper`](examples/dynamic_dispatch_wrapper.cpp), its [`interface`](examples/dynamic_dispatch_wrapper.hpp), and [`dynamic_dispatch_caller`](examples/dynamic_dispatch_caller.cpp) for CFFT and RFFT dynamic dispatch examples.
+See [`wrapper`](examples/dynamic_dispatch_wrapper.cpp), [`interface`](examples/dynamic_dispatch_wrapper.hpp), and [`dynamic_dispatch_caller`](examples/dynamic_dispatch_caller.cpp) for complete examples.
 
 ## License
 
-zldsp_fft is licensed under Apache-2.0 license, as found in the [LICENSE.md](LICENSE.md) file.
+zldsp_fft is licensed under the Apache-2.0 license ([LICENSE.md](LICENSE.md)).
 
-All external libraries (submodules) are not covered by this license. All trademarks, product names, and company names are the property of their respective owners and are used for identification purposes only. Please refer to the individual licenses within each submodule:
+External libraries (submodules) retain their respective licenses:
 
 - FFTW3: `fftw3_impl/fftw3` (GPL-2.0 license)
 - KFR: `kfr_impl/kfr` (GPL-2.0 license)

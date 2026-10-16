@@ -16,6 +16,8 @@ from build_config import ALGOS, ROOT, build_benchmark, get_algo_list, run_comman
 TIME_TO_US = {"ns": 1e-3, "us": 1.0, "ms": 1e3, "s": 1e6}
 REQUIRED_SUBMODULES = ("google/benchmark", "google/highway")
 DIRECTIONS = ("forward", "backward", "convolve", "roundtrip")
+DEFAULT_MIN_TIME0 = 0.5
+DEFAULT_MIN_TIME1 = 5.0
 METRICS = {
     "throughput": (("mflops", "MFLOPS (higher is faster)", ".1f"),),
     "accuracy": (("relative_rmse", "Relative RMSE (lower is better)", ".3e"),
@@ -64,6 +66,9 @@ def parse_throughput(data, kind, n0, n1, all_apis=False):
         if entry.get("run_type") == "aggregate":
             continue
         parts = entry.get("run_name", entry.get("name", "")).split("/")
+        # Google Benchmark appends the per-order MinTime setting to the name.
+        if len(parts) == 4 and parts[-1].startswith("min_time:"):
+            parts.pop()
         if len(parts) != 3:
             raise ValueError(f"Unexpected benchmark name: {entry.get('name')}")
         key = (parts[0], parts[1], int(parts[2]))
@@ -119,9 +124,17 @@ def parse_throughput(data, kind, n0, n1, all_apis=False):
     return rows
 
 
-def run_throughput(executable, kind, n0, n1, all_apis=False, repeats=3, min_time=0.1):
-    result = run_command([executable, n0, n1, "--benchmark_format=json",
-                          f"--benchmark_repetitions={repeats}", f"--benchmark_min_time={min_time}s"])
+def run_throughput(executable, kind, n0, n1, all_apis=False, repeats=3,
+                   min_time0=DEFAULT_MIN_TIME0, min_time1=DEFAULT_MIN_TIME1):
+    selected = sorted(case_keys(kind, all_apis, convolve_baselines=True))
+    case_filter = ("^(" + "|".join(f"{direction}/{api}" for direction, api in selected)
+                   + ")/[0-9]+(/min_time:[^/]+)?$")
+    # Override an environment-supplied iteration count; each case's MinTime
+    # takes precedence over this global seconds setting.
+    result = run_command([executable, n0, n1, f"--min-time0={min_time0}", f"--min-time1={min_time1}",
+                          "--benchmark_format=json",
+                          f"--benchmark_filter={case_filter}", "--benchmark_enable_random_interleaving=false",
+                          f"--benchmark_repetitions={repeats}", f"--benchmark_min_time={min_time0}s"])
     data = json.loads(result.stdout)
     return parse_throughput(data, kind, n0, n1, all_apis)
 
@@ -131,7 +144,7 @@ def validate_args(parser, args):
         parser.error("orders must satisfy 1 <= n0 <= n1 <= 30")
     if args.repeats < 1:
         parser.error("--repeats must be positive")
-    for name in ("min_time", "threshold"):
+    for name in ("min_time0", "min_time1", "threshold"):
         value = getattr(args, name, None)
         if value is not None and (not math.isfinite(value) or value <= 0):
             parser.error(f"--{name.replace('_', '-')} must be finite and positive")
@@ -241,18 +254,36 @@ def throughput(args):
     algorithms = (get_algo_list(full=args.all_libraries) if args.standard_libraries or args.all_libraries
                   else args.libraries or ["zldsp"])
     algorithms = list(dict.fromkeys(algorithms))
-    rows = []
+    executables = {}
     for algorithm in algorithms:
-        print(f"Measuring {kind.upper()} {algorithm}, orders {args.n0}-{args.n1}...", file=sys.stderr, flush=True)
-        target = f"throughput_{'zldsp_' if all_apis else ''}{kind}"
-        executable = build_benchmark(algorithm, target, args.avx2, args.double, use_sse2=args.sse2,
-                                     artifacts_dir=args.artifacts_dir)
-        results = run_throughput(executable, kind, args.n0, args.n1, all_apis, args.repeats, args.min_time)
+        action = "Using prebuilt" if args.skip_build else "Building"
+        print(f"{action} {kind.upper()} {algorithm}...", file=sys.stderr, flush=True)
+        # Common zldsp cases and --apis use exactly the same optimized binary.
+        target = f"throughput_{'zldsp_' if algorithm == 'zldsp' else ''}{kind}"
+        executables[algorithm] = build_benchmark(algorithm, target, args.avx2, args.double,
+                                               use_sse2=args.sse2, artifacts_dir=args.artifacts_dir,
+                                               skip_build=args.skip_build)
+    if args.build_only:
+        print("Builds complete. Use --skip-build with the same library, precision, ISA and artifacts options to measure.")
+        return
+    rows = []
+    for algorithm, executable in executables.items():
+        print(f"Measuring {kind.upper()} {algorithm}, orders {args.n0}-{args.n1} "
+              f"({args.repeats} repetitions, {timing_description(args)})...", file=sys.stderr, flush=True)
+        results = run_throughput(executable, kind, args.n0, args.n1, all_apis, args.repeats,
+                                 args.min_time0, args.min_time1)
         for row in results:
             row["library"] = algorithm
         rows.extend(results)
     print_tables(args, rows)
     save_results(args, kind, "throughput", rows)
+
+
+def timing_description(args):
+    if args.n0 == args.n1 or args.min_time0 == args.min_time1:
+        return f"minimum {args.min_time0:g}s per case/repetition"
+    return (f"minimum {args.min_time0:g}s at order {args.n0} to {args.min_time1:g}s at order {args.n1} "
+            "per case/repetition, exponential scaling")
 
 
 def parse_accuracy(output, kind, order, all_apis, threshold):
@@ -393,6 +424,7 @@ def compare(args):
                  "previous": git_output(ROOT, "rev-parse", "--verify", f"{args.previous}^{{commit}}")}
     print(f"Current:  {revisions['current']}\nPrevious: {revisions['previous']}")
     print("Both commits use this checkout's benchmark harness; uncommitted FFT changes are excluded.", flush=True)
+    print(f"Timing: {timing_description(args)}", flush=True)
     runs = {"current": [], "previous": []}
     if args.artifacts_dir is not None:
         args.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -407,7 +439,7 @@ def compare(args):
             if source.suffix in (".cpp", ".hpp"):
                 shutil.copy2(source, harness / "benchmark" / source.name)
         executables = {}
-        target = f"throughput_{'zldsp_' if args.apis else ''}{kind}"
+        target = f"throughput_zldsp_{kind}"
         for label, revision in revisions.items():
             source = temp_root / f"source-{label}"
             export_revision(ROOT, revision, source, temp_root, harness)
@@ -420,7 +452,8 @@ def compare(args):
             print(f"Pair {repetition + 1}/{args.repeats}: {' then '.join(labels)}", flush=True)
             for label in labels:
                 runs[label].append(run_throughput(executables[label], kind, args.n0, args.n1,
-                                                 args.apis, repeats=1, min_time=args.min_time))
+                                                 args.apis, repeats=1,
+                                                 min_time0=args.min_time0, min_time1=args.min_time1))
     summary = summarize_pairs(runs["current"], runs["previous"])
     print(f"{'Order':>5} {'Direction':<9} {'API':<12} {'Current us':>12} {'Previous us':>12} {'Ratio':>9} {'Change':>9} {'MAD':>9}")
     for row in summary:
@@ -462,6 +495,11 @@ def parse_args(argv=None):
                                help="Measure available libraries except FFTW measure and estimate")
             scope.add_argument("--all-libraries", action="store_true",
                                help="Measure available libraries, including FFTW measure and estimate")
+            build_mode = command.add_mutually_exclusive_group()
+            build_mode.add_argument("--build-only", action="store_true",
+                                    help="Build all selected libraries without measuring")
+            build_mode.add_argument("--skip-build", action="store_true",
+                                    help="Measure existing binaries without configuring or building")
         command.add_argument("--repeats", type=int, default=6 if operation == "compare" else 3,
                              help={"accuracy": "Random inputs in addition to five fixed signals (default: 3)",
                                    "throughput": "Timing repetitions per case (default: 3)",
@@ -470,12 +508,28 @@ def parse_args(argv=None):
             command.add_argument("--threshold", type=float,
                                  help="Maximum relative RMSE (default: float 2e-5, double 2e-12)")
         else:
-            command.add_argument("--min-time", type=float, default=0.1,
-                                 help="Minimum seconds per case/repetition (default: 0.1)")
+            command.add_argument("--min-time0", type=float,
+                                 help="Minimum seconds per case/repetition at n0 (default: 0.5); "
+                                      "scales exponentially to --min-time1 at n1")
+            command.add_argument("--min-time1", type=float,
+                                 help="Minimum seconds per case/repetition at n1 (default: 5); "
+                                      "a single-order run uses --min-time0")
+            command.add_argument("--min-time", type=float,
+                                 help="Set both timing endpoints to the same value; "
+                                      "cannot be combined with --min-time0 or --min-time1")
         if operation == "compare":
             command.add_argument("--current", default="HEAD", help="New revision (default: HEAD)")
             command.add_argument("--previous", default="HEAD^", help="Baseline revision (default: HEAD^)")
     args = parser.parse_args(argv)
+    if args.operation != "accuracy":
+        if args.min_time is not None:
+            if args.min_time0 is not None or args.min_time1 is not None:
+                parser.error("--min-time cannot be combined with --min-time0 or --min-time1")
+            args.min_time0 = args.min_time1 = args.min_time
+        if args.min_time0 is None:
+            args.min_time0 = DEFAULT_MIN_TIME0
+        if args.min_time1 is None:
+            args.min_time1 = DEFAULT_MIN_TIME1
     if args.operation == "accuracy":
         if args.threshold is None:
             args.threshold = 2e-12 if args.double else 2e-5
