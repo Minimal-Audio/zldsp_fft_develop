@@ -26,7 +26,7 @@ python3 benchmark/run.py <accuracy|throughput|compare> <cfft|rfft> <n0> <n1> [op
 - `--avx2` / `--sse2`: Select x86 SIMD target (default: SSE4.2 on x86; ARM uses NEON).
 - `--apis`: Test all `zldsp::fft` layouts and APIs (AoS/SoA, `forward_sqr_mag`, RFFT `convolve`).
 - `--repeats <k>`: Repetition count for accuracy inputs (`3`), throughput measurements (`3`), or paired comparison runs (`6`).
-- `--artifacts-dir <dir>`: Directory for build artifacts and temporary files (default: `<repo>/build_fft`).
+- `--artifacts-dir <dir>`: Directory for build artifacts and temporary files (default: `<repo>/build_fft` for accuracy/throughput, system temporary directory for comparisons).
 - `--json <file>`: Save detailed results to a JSON file.
 
 ### Accuracy
@@ -62,23 +62,6 @@ python3 benchmark/run.py throughput rfft 5 20 --apis
 - **Duration**: By default, measurement time scales exponentially from `--min-time0` (0.5s at `n0`) to `--min-time1` (5s at `n1`) per repetition. Use `--min-time <seconds>` for a fixed duration across all orders.
 - **Builds**: Selected backends are compiled before benchmarking. Use `--build-only` to compile without measuring, or `--skip-build` to benchmark existing binaries.
 - **Metrics**: Reports nominal **MFLOPS** from median single-call times across `--repeats` runs (`5*N*log2(N)` for CFFT, `2.5*N*log2(N)` for RFFT).
-
-### RFFT Output Reuse
-
-Large RFFTs reuse disjoint caller output buffers for intermediate computation to reduce workspace memory. Small transforms and overlapping buffers fall back to the dedicated internal workspace automatically.
-
-Run validation tests and optional throughput comparisons:
-
-```console
-cmake -S . -B build_fft/output-reuse -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DOUTPUT_REUSE_CHECK=ON -DOUTPUT_REUSE_THROUGHPUT_TEST=ON -DBENCHMARK_SELF_TESTS=ON
-cmake --build build_fft/output-reuse
-ctest --test-dir build_fft/output-reuse --output-on-failure
-build_fft/output-reuse/zldsp_fft_output_reuse_throughput 18 \
-  --benchmark_repetitions=5 --benchmark_enable_random_interleaving=true
-```
-
-Pass explicit orders (`1` to `24`) to `zldsp_fft_output_reuse_check` to test specific sizes, or add `-DASAN_TEST=ON` to enable AddressSanitizer.
 
 ### Comparing Git Revisions
 

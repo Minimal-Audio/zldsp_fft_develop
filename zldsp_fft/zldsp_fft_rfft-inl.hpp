@@ -256,6 +256,13 @@ namespace zldsp::fft::HWY_NAMESPACE {
                     common::execute_rfft_forward_post_inplace(out, state_.cfft_order, rfft_w_.get());
                     return;
                 }
+            } else {
+                if (state_.num_macro_stages != 0 && reuse_outputs_ &&
+                    !buffers_overlap(in, rfft_size_, out.interleaved, rfft_size_ + 2)) {
+                    common::execute_cfft<true>(state_, common::make_aos(reinterpret_cast<Complex*>(in)), out);
+                    common::execute_rfft_forward_post_inplace(out, state_.cfft_order, rfft_w_.get());
+                    return;
+                }
             }
             common::execute_cfft<true>(state_, common::make_aos(reinterpret_cast<Complex*>(in)),
                                        forward_cfft_output_);

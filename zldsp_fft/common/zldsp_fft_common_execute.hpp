@@ -679,24 +679,24 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
      * execute in-place RFFT forward post-processing, with a given SIMD tag
      * @tparam D
      * @tparam F
+     * @tparam Ptr
      * @param d
-     * @param buffer disjoint real and imaginary planes, each with cfft_size + 1 elements
+     * @param buffer cfft_size + 1 complex values, with disjoint planes for SoA
      * @param cfft_order
      * @param w
      */
-    template <typename D, typename F>
-    HWY_INLINE void execute_rfft_forward_post_inplace_internal(D d, SoAPtr<F> buffer,
+    template <typename D, typename F, typename Ptr>
+    HWY_INLINE void execute_rfft_forward_post_inplace_internal(D d, Ptr buffer,
                                                               const size_t cfft_order,
                                                               const F* HWY_RESTRICT w) noexcept {
         const size_t cfft_size = static_cast<size_t>(1) << cfft_order;
         static constexpr size_t lanes = hn::MaxLanes(d);
 
-        const F r0 = buffer.real[0];
-        const F i0 = buffer.imag[0];
-        buffer.real[0] = r0 + i0;
-        buffer.imag[0] = static_cast<F>(0.0);
-        buffer.real[cfft_size] = r0 - i0;
-        buffer.imag[cfft_size] = static_cast<F>(0.0);
+        F r0, i0;
+        common::load_scalar<true>(buffer, r0, i0);
+        common::store_scalar<true>(buffer, r0 + i0, static_cast<F>(0.0));
+        common::store_scalar<true>(buffer.shift(Ptr::get_complex_offset(cfft_size)),
+                                   r0 - i0, static_cast<F>(0.0));
 
         const size_t num_elements = cfft_size >> 1;
         const size_t num_blocks = (num_elements + lanes - 1) / lanes;
@@ -706,10 +706,9 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
             const size_t mirror = cfft_size - k - lanes + 1;
 
             // load both mirrored blocks before storing either, including the shared center bin
-            const auto r1 = hn::LoadU(d, buffer.real + k);
-            const auto i1 = hn::LoadU(d, buffer.imag + k);
-            const auto r2_raw = hn::LoadU(d, buffer.real + mirror);
-            const auto i2_raw = hn::LoadU(d, buffer.imag + mirror);
+            hn::Vec<D> r1, i1, r2_raw, i2_raw;
+            common::load_complex<true>(d, buffer.shift(Ptr::get_complex_offset(k)), r1, i1);
+            common::load_complex<true>(d, buffer.shift(Ptr::get_complex_offset(mirror)), r2_raw, i2_raw);
             const auto r2 = hn::Reverse(d, r2_raw);
             const auto i2 = hn::Reverse(d, i2_raw);
 
@@ -728,22 +727,22 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
             const auto xi_mirror_tmp = hn::NegMulAdd(si, ws, i2);
             const auto xi_mirror = hn::NegMulAdd(dr, wc, xi_mirror_tmp);
 
-            hn::StoreU(xr_k, d, buffer.real + k);
-            hn::StoreU(xi_k, d, buffer.imag + k);
-            hn::StoreU(hn::Reverse(d, xr_mirror), d, buffer.real + mirror);
-            hn::StoreU(hn::Reverse(d, xi_mirror), d, buffer.imag + mirror);
+            common::store_complex<true>(d, buffer.shift(Ptr::get_complex_offset(k)), xr_k, xi_k);
+            common::store_complex<true>(d, buffer.shift(Ptr::get_complex_offset(mirror)),
+                                        hn::Reverse(d, xr_mirror), hn::Reverse(d, xi_mirror));
         }
     }
 
     /**
      * execute in-place RFFT forward post-processing through a single pointer wrapper
      * @tparam F
+     * @tparam Ptr
      * @param buffer
      * @param cfft_order
      * @param w
      */
-    template <typename F>
-    HWY_INLINE void execute_rfft_forward_post_inplace(SoAPtr<F> buffer, const size_t cfft_order,
+    template <typename F, typename Ptr>
+    HWY_INLINE void execute_rfft_forward_post_inplace(Ptr buffer, const size_t cfft_order,
                                                      const F* HWY_RESTRICT w) noexcept {
         dispatch_rfft_tag<F>(cfft_order, [&](auto d) {
             execute_rfft_forward_post_inplace_internal(d, buffer, cfft_order, w);
