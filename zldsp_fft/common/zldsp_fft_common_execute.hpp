@@ -486,15 +486,26 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     HWY_INLINE void execute_hybrid_macro(const CFFTState<F>& state, InPtr in) noexcept {
         F* HWY_RESTRICT macro_workspace = state.workspace.get();
         const F* HWY_RESTRICT w = state.macro_w.get();
-        common::radix4_first_pass_dif_fused_aosoa<is_forward>(in, macro_workspace, state.cfft_size, w);
-        w += state.macro_w_strides[0];
+        if constexpr (HWY_TARGET == HWY_AVX2) {
+            common::radix4_first_pass_dif_compact_aosoa<is_forward>(
+                in, macro_workspace, state.cfft_size, w, state.macro_stages[0].tile_width, state.macro_w_tile.get());
+        } else {
+            common::radix4_first_pass_dif_fused_aosoa<is_forward>(in, macro_workspace, state.cfft_size, w);
+        }
+        w += state.macro_stages[0].w_stride;
 
         const size_t remaining_stages = state.num_macro_stages - 1;
         if (remaining_stages != 0) {
             const size_t width = state.cfft_size >> 4;
-            common::radix4_dif_aosoa_depth_first(macro_workspace,
-                                                 state.cfft_size, width, remaining_stages,
-                                                 w, state.macro_w_strides.data() + 1);
+            if constexpr (HWY_TARGET == HWY_AVX2) {
+                common::radix4_dif_compact_aosoa_depth_first(macro_workspace,
+                                                             state.cfft_size, width, remaining_stages,
+                                                             w, state.macro_stages.data() + 1, state.macro_w_tile.get());
+            } else {
+                common::radix4_dif_aosoa_depth_first(macro_workspace,
+                                                     state.cfft_size, width, remaining_stages,
+                                                     w, state.macro_stages.data() + 1);
+            }
         }
     }
 
