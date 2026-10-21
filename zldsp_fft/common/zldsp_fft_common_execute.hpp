@@ -430,7 +430,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     template <size_t micro_order, bool is_forward, typename F, typename OutPtr>
-    HWY_NOINLINE void execute_hybrid_tail(const CFFTState<F>& state, OutPtr out) noexcept {
+    HWY_NOINLINE void execute_hybrid_tail(const CFFTState<F>& state, OutPtr out, F* HWY_RESTRICT scratch) noexcept {
         static_assert(micro_order == 0 || (micro_order >= 8 && micro_order <= 10));
         const size_t micro_fft_size = [&]() {
             if constexpr (micro_order == 0) {
@@ -442,7 +442,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
         const size_t micro_fft_size_padded = micro_fft_size + get_transpose_padding<F>();
 
         static constexpr size_t kTransposeTileRows = kHybridTransposeTileRows;
-        F* HWY_RESTRICT transpose_tile_r = state.workspace.get() + 2 * state.macro_stride;
+        F* HWY_RESTRICT transpose_tile_r = scratch + 2 * state.macro_stride;
         F* HWY_RESTRICT transpose_tile_i = transpose_tile_r + state.transpose_tile_stride;
         F* HWY_RESTRICT micro_workspace = transpose_tile_i + state.transpose_tile_stride;
 
@@ -456,7 +456,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 const size_t output_row = tile_row_begin + tile_row;
                 const size_t macro_leaf_index = state.radix4_digit_reversal[output_row];
 
-                F* HWY_RESTRICT macro_leaf = state.workspace.get() + 2 * macro_leaf_index * micro_fft_size;
+                F* HWY_RESTRICT macro_leaf = scratch + 2 * macro_leaf_index * micro_fft_size;
                 SoAPtr<F> tile_row_output = make_soa<F>({
                     transpose_tile_r + tile_row * micro_fft_size_padded,
                     transpose_tile_i + tile_row * micro_fft_size_padded,
@@ -475,21 +475,23 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     /**
-     * execute macro Cooley-Tukey DIF CFFT into the internal workspace
+     * execute macro Cooley-Tukey DIF CFFT into the scratch workspace
      * @tparam is_forward
      * @tparam F
      * @tparam InPtr
      * @param state CFFT state with at least one macro stage
      * @param in
+     * @param scratch aligned scratch of state.scratch_size elements
      */
     template <bool is_forward, typename F, typename InPtr>
-    HWY_INLINE void execute_hybrid_macro(const CFFTState<F>& state, InPtr in) noexcept {
+    HWY_INLINE void execute_hybrid_macro(const CFFTState<F>& state, InPtr in, F* HWY_RESTRICT scratch) noexcept {
         static constexpr size_t vector_bytes = hn::ScalableTag<F>{}.MaxBytes();
-        F* HWY_RESTRICT macro_workspace = state.workspace.get();
+        F* HWY_RESTRICT macro_workspace = scratch;
+        F* HWY_RESTRICT macro_w_tile = scratch + state.macro_w_tile_offset;
         const F* HWY_RESTRICT w = state.macro_w.get();
         if constexpr (vector_bytes == 32) {
             common::radix4_first_pass_dif_compact_aosoa<is_forward>(
-                in, macro_workspace, state.cfft_size, w, state.macro_stages[0].tile_width, state.macro_w_tile.get());
+                in, macro_workspace, state.cfft_size, w, state.macro_stages[0].tile_width, macro_w_tile);
         } else {
             common::radix4_first_pass_dif_fused_aosoa<is_forward>(in, macro_workspace, state.cfft_size, w);
         }
@@ -501,7 +503,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
             if constexpr (vector_bytes == 32) {
                 common::radix4_dif_compact_aosoa_depth_first(macro_workspace,
                                                              state.cfft_size, width, remaining_stages,
-                                                             w, state.macro_stages.data() + 1, state.macro_w_tile.get());
+                                                             w, state.macro_stages.data() + 1, macro_w_tile);
             } else {
                 common::radix4_dif_aosoa_depth_first(macro_workspace,
                                                      state.cfft_size, width, remaining_stages,
@@ -517,21 +519,22 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
      * @tparam OutPtr
      * @param state
      * @param out
+     * @param scratch aligned scratch of state.scratch_size elements
      */
     template <bool is_forward, typename F, typename OutPtr>
-    HWY_INLINE void dispatch_hybrid_tail(const CFFTState<F>& state, OutPtr out) noexcept {
+    HWY_INLINE void dispatch_hybrid_tail(const CFFTState<F>& state, OutPtr out, F* HWY_RESTRICT scratch) noexcept {
         switch (state.micro_order) {
         case 8:
-            execute_hybrid_tail<8, is_forward>(state, out);
+            execute_hybrid_tail<8, is_forward>(state, out, scratch);
             return;
         case 9:
-            execute_hybrid_tail<9, is_forward>(state, out);
+            execute_hybrid_tail<9, is_forward>(state, out, scratch);
             return;
         case 10:
-            execute_hybrid_tail<10, is_forward>(state, out);
+            execute_hybrid_tail<10, is_forward>(state, out, scratch);
             return;
         default:
-            execute_hybrid_tail<0, is_forward>(state, out);
+            execute_hybrid_tail<0, is_forward>(state, out, scratch);
             return;
         }
     }
@@ -545,19 +548,20 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
      * @param state
      * @param in
      * @param out
+     * @param scratch aligned scratch of state.scratch_size elements
      */
     template <bool is_forward, typename F, typename InPtr, typename OutPtr>
-    HWY_INLINE void execute_cfft(const CFFTState<F>& state, InPtr in, OutPtr out) noexcept {
+    HWY_INLINE void execute_cfft(const CFFTState<F>& state, InPtr in, OutPtr out, F* HWY_RESTRICT scratch) noexcept {
         // small FFT, dispatch to pure Stockham CFFT
         if (state.num_macro_stages == 0) {
-            execute_stockham_cfft<is_forward, F, InPtr, OutPtr>(in, out, state.workspace.get(),
+            execute_stockham_cfft<is_forward, F, InPtr, OutPtr>(in, out, scratch,
                                                                 state.micro_order, state.micro_stride,
                                                                 state.micro_stages,
                                                                 state.micro_w.get(), state.micro_w_strides);
             return;
         }
-        execute_hybrid_macro<is_forward>(state, in);
-        dispatch_hybrid_tail<is_forward>(state, out);
+        execute_hybrid_macro<is_forward>(state, in, scratch);
+        dispatch_hybrid_tail<is_forward>(state, out, scratch);
     }
 
     /**

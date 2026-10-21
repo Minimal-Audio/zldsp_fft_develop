@@ -62,11 +62,31 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
         return ptr;
     }
 
+    /**
+     * byte alignment of caller-provided scratch: one cache line, which covers every supported vector width
+     */
+    inline constexpr size_t kScratchAlignment = 64;
+
+    /**
+     * round a scratch element count up to the scratch alignment
+     * @tparam F
+     * @param count
+     * @return aligned element count
+     */
+    template <typename F>
+    [[nodiscard]] inline constexpr size_t align_scratch_count(const size_t count) noexcept {
+        constexpr size_t alignment = kScratchAlignment / sizeof(F);
+        return (count + alignment - 1) / alignment * alignment;
+    }
+
+    /**
+     * read-only CFFT plan; the buffers written during a transform live in caller-provided scratch,
+     * laid out as [workspace | macro twiddle tile]
+     */
     template <typename F>
     struct CFFTState {
         size_t cfft_size = 0;
         size_t cfft_order = 0;
-        hwy::AlignedFreeUniquePtr<F[]> workspace;
 
         size_t micro_order = 0;
         std::vector<StageType> micro_stages;
@@ -77,12 +97,15 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
         size_t num_macro_stages = 0;
         hwy::AlignedFreeUniquePtr<F[]> macro_w;
         std::vector<MacroTwiddleStage> macro_stages;
-        hwy::AlignedFreeUniquePtr<F[]> macro_w_tile;
         size_t macro_stride = 0;
 
         size_t num_micro_ffts = 0;
         size_t transpose_tile_stride = 0;
         std::vector<size_t> radix4_digit_reversal;
+
+        // scratch layout, in F elements
+        size_t macro_w_tile_offset = 0;
+        size_t scratch_size = 0;
     };
 
     inline constexpr size_t kHybridTransposeTileRows = 64;
@@ -378,7 +401,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     /**
-     * initialize twiddle factors and workspace for CFFT
+     * initialize twiddle factors and the scratch layout for CFFT
      * @tparam F
      * @param cfft_order
      * @param state
@@ -391,9 +414,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
             state.num_macro_stages = 0;
             state.micro_stride = common::init_stockham_cfft_state(state.micro_order, state.micro_stages,
                                                                   state.micro_w, state.micro_w_strides);
-            if (state.micro_stride > 0) {
-                state.workspace = common::allocate_aligned<F>(4 * state.micro_stride);
-            }
+            state.scratch_size = 4 * state.micro_stride;
         } else {
             if ((cfft_order - max_l1_order) % 2 != 0) {
                 state.micro_order = max_l1_order - 1;
@@ -407,14 +428,6 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
 
             state.macro_stride = common::init_cooley_tukey_cfft_state(state.cfft_order, state.num_macro_stages,
                                                                       state.macro_w, state.macro_stages);
-            size_t tile_width = 0;
-            for (const auto& stage : state.macro_stages) {
-                tile_width = std::max(tile_width, stage.tile_width);
-            }
-            if (tile_width != 0) {
-                state.macro_w_tile = common::allocate_aligned<F>(6 * tile_width);
-            }
-
             state.num_micro_ffts = static_cast<size_t>(1) << (state.cfft_order - state.micro_order);
             const size_t micro_fft_size = static_cast<size_t>(1) << state.micro_order;
             const size_t transpose_tile_rows = std::min<size_t>(kHybridTransposeTileRows, state.num_micro_ffts);
@@ -423,7 +436,17 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
 
             const size_t workspace_size =
                 2 * state.macro_stride + 2 * state.transpose_tile_stride + 2 * state.micro_stride;
-            state.workspace = common::allocate_aligned<F>(workspace_size);
+            state.scratch_size = workspace_size;
+
+            size_t tile_width = 0;
+            for (const auto& stage : state.macro_stages) {
+                tile_width = std::max(tile_width, stage.tile_width);
+            }
+            if (tile_width != 0) {
+                // keep the tile off the cache sets the end of the workspace maps to
+                state.macro_w_tile_offset = align_scratch_count<F>(workspace_size) + get_cache_color_padding<F>();
+                state.scratch_size = state.macro_w_tile_offset + 6 * tile_width;
+            }
 
             common::init_radix4_digit_reversal(state.num_micro_ffts, state.num_macro_stages,
                                                state.radix4_digit_reversal);
