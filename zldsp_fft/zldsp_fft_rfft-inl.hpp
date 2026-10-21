@@ -126,8 +126,7 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch at least get_scratch_size() elements, aligned to kScratchAlignment bytes
          */
         void forward(F* in_buffer, Complex* out_buffer, std::span<F> scratch) const noexcept {
-            F* data = check_scratch(scratch);
-            execute_forward(in_buffer, common::make_aos(out_buffer), data);
+            execute_forward(in_buffer, common::make_aos(out_buffer), scratch);
         }
 
         /**
@@ -137,8 +136,7 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch at least get_scratch_size() elements, aligned to kScratchAlignment bytes
          */
         void forward(F* in_buffer, std::array<F*, 2> out_buffer, std::span<F> scratch) const noexcept {
-            F* data = check_scratch(scratch);
-            execute_forward(in_buffer, common::make_soa(out_buffer), data);
+            execute_forward(in_buffer, common::make_soa(out_buffer), scratch);
         }
 
         /**
@@ -148,8 +146,7 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch at least get_scratch_size() elements, aligned to kScratchAlignment bytes
          */
         void backward(Complex* in_buffer, F* out_buffer, std::span<F> scratch) const noexcept {
-            F* data = check_scratch(scratch);
-            execute_backward(common::make_aos(in_buffer), out_buffer, data);
+            execute_backward(common::make_aos(in_buffer), out_buffer, scratch);
         }
 
         /**
@@ -159,8 +156,7 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch at least get_scratch_size() elements, aligned to kScratchAlignment bytes
          */
         void backward(std::array<F*, 2> in_buffer, F* out_buffer, std::span<F> scratch) const noexcept {
-            F* data = check_scratch(scratch);
-            execute_backward(common::make_soa(in_buffer), out_buffer, data);
+            execute_backward(common::make_soa(in_buffer), out_buffer, scratch);
         }
 
         /**
@@ -170,8 +166,7 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch at least get_scratch_size() elements, aligned to kScratchAlignment bytes
          */
         void forward_sqr_mag(F* in_buffer, F* out_buffer, std::span<F> scratch) const noexcept {
-            F* data = check_scratch(scratch);
-            execute_forward_sqr_mag(in_buffer, out_buffer, data);
+            execute_forward_sqr_mag(in_buffer, out_buffer, scratch);
         }
 
         /**
@@ -182,8 +177,7 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch at least get_scratch_size() elements, aligned to kScratchAlignment bytes
          */
         void convolve(const F* in_buffer, const Complex* spectrum, F* out_buffer, std::span<F> scratch) const noexcept {
-            F* data = check_scratch(scratch);
-            execute_convolve(in_buffer, common::make_aos(spectrum), out_buffer, data);
+            execute_convolve(in_buffer, common::make_aos(spectrum), out_buffer, scratch);
         }
 
         /**
@@ -195,8 +189,7 @@ namespace zldsp::fft::HWY_NAMESPACE {
          */
         void convolve(const F* in_buffer, std::array<const F*, 2> spectrum, F* out_buffer,
                       std::span<F> scratch) const noexcept {
-            F* data = check_scratch(scratch);
-            execute_convolve(in_buffer, common::make_soa(spectrum), out_buffer, data);
+            execute_convolve(in_buffer, common::make_soa(spectrum), out_buffer, scratch);
         }
 
         /**
@@ -207,8 +200,7 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch at least get_scratch_size() elements, aligned to kScratchAlignment bytes
          */
         void convolve(const F* in_buffer, const F* spectrum, F* out_buffer, std::span<F> scratch) const noexcept {
-            F* data = check_scratch(scratch);
-            execute_convolve(in_buffer, spectrum, out_buffer, data);
+            execute_convolve(in_buffer, spectrum, out_buffer, scratch);
         }
 
     private:
@@ -277,10 +269,11 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param out
          * @param scratch
          */
-        void execute_forward_sqr_mag(F* in, F* out, F* scratch) const noexcept {
-            const auto forward_cfft_output = at(scratch, forward_cfft_output_);
+        void execute_forward_sqr_mag(F* in, F* out, const std::span<F> scratch) const noexcept {
+            F* data = check_scratch(scratch);
+            const auto forward_cfft_output = at(data, forward_cfft_output_);
             common::execute_cfft<true>(state_, common::make_aos(reinterpret_cast<Complex*>(in)),
-                                       forward_cfft_output, scratch);
+                                       forward_cfft_output, data);
             common::execute_rfft_forward_sqr_mag_post(forward_cfft_output, out,
                                                       state_.cfft_order, rfft_w_.get());
         }
@@ -294,15 +287,16 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch
          */
         template <typename SpectrumPtr>
-        void execute_convolve(const F* in, SpectrumPtr spectrum, F* out, F* scratch) const noexcept {
-            const auto forward_cfft_output = at(scratch, forward_cfft_output_);
-            const auto backward_cfft_input = at(scratch, backward_cfft_input_);
-            common::execute_cfft<true>(state_, common::AoSPtr<const F>{in}, forward_cfft_output, scratch);
+        void execute_convolve(const F* in, SpectrumPtr spectrum, F* out, const std::span<F> scratch) const noexcept {
+            F* data = check_scratch(scratch);
+            const auto forward_cfft_output = at(data, forward_cfft_output_);
+            const auto backward_cfft_input = at(data, backward_cfft_input_);
+            common::execute_cfft<true>(state_, common::AoSPtr<const F>{in}, forward_cfft_output, data);
             common::execute_rfft_convolve<F>(
                 {forward_cfft_output.real, forward_cfft_output.imag}, spectrum,
                 {backward_cfft_input.real, backward_cfft_input.imag}, state_.cfft_order, rfft_w_.get());
             common::execute_cfft<false>(state_, backward_cfft_input,
-                                       common::make_aos(reinterpret_cast<Complex*>(out)), scratch);
+                                       common::make_aos(reinterpret_cast<Complex*>(out)), data);
         }
 
         /**
@@ -313,28 +307,29 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch
          */
         template <typename OutPtr>
-        void execute_forward(F* in, OutPtr out, F* scratch) const noexcept {
+        void execute_forward(F* in, OutPtr out, const std::span<F> scratch) const noexcept {
+            F* data = check_scratch(scratch);
             if constexpr (std::is_same_v<OutPtr, common::SoAPtr<F>>) {
                 const size_t bins = state_.cfft_size + 1;
                 if (state_.num_macro_stages != 0 && reuse_outputs_ &&
                     !buffers_overlap(in, rfft_size_, out.real, bins) &&
                     !buffers_overlap(in, rfft_size_, out.imag, bins) &&
                     !buffers_overlap(out.real, bins, out.imag, bins)) {
-                    common::execute_cfft<true>(state_, common::make_aos(reinterpret_cast<Complex*>(in)), out, scratch);
+                    common::execute_cfft<true>(state_, common::make_aos(reinterpret_cast<Complex*>(in)), out, data);
                     common::execute_rfft_forward_post_inplace(out, state_.cfft_order, rfft_w_.get());
                     return;
                 }
             } else {
                 if (state_.num_macro_stages != 0 && reuse_outputs_ &&
                     !buffers_overlap(in, rfft_size_, out.interleaved, rfft_size_ + 2)) {
-                    common::execute_cfft<true>(state_, common::make_aos(reinterpret_cast<Complex*>(in)), out, scratch);
+                    common::execute_cfft<true>(state_, common::make_aos(reinterpret_cast<Complex*>(in)), out, data);
                     common::execute_rfft_forward_post_inplace(out, state_.cfft_order, rfft_w_.get());
                     return;
                 }
             }
-            const auto forward_cfft_output = at(scratch, forward_cfft_output_);
+            const auto forward_cfft_output = at(data, forward_cfft_output_);
             common::execute_cfft<true>(state_, common::make_aos(reinterpret_cast<Complex*>(in)),
-                                       forward_cfft_output, scratch);
+                                       forward_cfft_output, data);
             common::execute_rfft_forward_post(forward_cfft_output, out,
                                               state_.cfft_order, rfft_w_.get());
         }
@@ -347,22 +342,23 @@ namespace zldsp::fft::HWY_NAMESPACE {
          * @param scratch
          */
         template <typename InPtr>
-        void execute_backward(InPtr in, F* out, F* scratch) const noexcept {
+        void execute_backward(InPtr in, F* out, const std::span<F> scratch) const noexcept {
+            F* data = check_scratch(scratch);
             if (state_.num_macro_stages != 0 && reuse_outputs_ && !backward_input_overlaps_output(in, out)) {
                 // reuse the real output as SoA scratch, ending each restricted view before changing layouts
                 common::execute_rfft_backward_pre(in, common::make_soa<F>({out, out + state_.cfft_size}),
                                                    state_.cfft_order, rfft_w_.get());
                 common::execute_hybrid_macro<false>(state_, common::make_soa<F>({out, out + state_.cfft_size}),
-                                                    scratch);
+                                                    data);
                 common::dispatch_hybrid_tail<false>(state_, common::make_aos<F>(reinterpret_cast<Complex*>(out)),
-                                                    scratch);
+                                                    data);
                 return;
             }
-            const auto backward_cfft_input = at(scratch, backward_cfft_input_);
+            const auto backward_cfft_input = at(data, backward_cfft_input_);
             common::execute_rfft_backward_pre(in, backward_cfft_input,
                                               state_.cfft_order, rfft_w_.get());
             common::execute_cfft<false>(state_, backward_cfft_input,
-                                        common::make_aos<F>(reinterpret_cast<Complex*>(out)), scratch);
+                                        common::make_aos<F>(reinterpret_cast<Complex*>(out)), data);
         }
     };
 
