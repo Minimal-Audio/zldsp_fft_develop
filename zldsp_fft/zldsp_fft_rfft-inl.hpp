@@ -67,7 +67,8 @@ namespace zldsp::fft::HWY_NAMESPACE {
 
 #ifdef ZLDSP_EXPERIMENT_RUNTIME_OUTPUT_REUSE
         /**
-         * select RFFT output reuse for throughput comparisons
+         * select RFFT output reuse for throughput comparisons;
+         * call it before the plan is shared, as transforms read the flag
          * @param enabled
          */
         void set_experiment_output_reuse(const bool enabled) noexcept {
