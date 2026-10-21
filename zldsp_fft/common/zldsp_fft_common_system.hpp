@@ -29,10 +29,10 @@ HWY_BEFORE_NAMESPACE();
 
 namespace zldsp::fft::HWY_NAMESPACE::common {
     /**
-     * get data-cache line size
+     * query data-cache line size from the operating system
      * @return data-cache line size in bytes
      */
-    [[nodiscard]] inline size_t get_cache_line_size() {
+    [[nodiscard]] inline size_t query_cache_line_size() {
         size_t line_size = 64;
 #if defined(__APPLE__)
         size_t size = sizeof(line_size);
@@ -63,10 +63,19 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     /**
-     * get L1 data-cache size
+     * get data-cache line size, queried once per process
+     * @return data-cache line size in bytes
+     */
+    [[nodiscard]] inline size_t get_cache_line_size() {
+        static const size_t line_size = query_cache_line_size();
+        return line_size;
+    }
+
+    /**
+     * query L1 data-cache size from the operating system
      * @return size in bytes
      */
-    [[nodiscard]] inline size_t get_l1d_cache_size() {
+    [[nodiscard]] inline size_t query_l1d_cache_size() {
         size_t l1d_size = 32768;
 #if defined(__APPLE__)
         size_t size = sizeof(l1d_size);
@@ -97,10 +106,19 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     /**
-     * get L2 cache size
+     * get L1 data-cache size, queried once per process
      * @return size in bytes
      */
-    [[nodiscard]] inline size_t get_l2_cache_size() {
+    [[nodiscard]] inline size_t get_l1d_cache_size() {
+        static const size_t l1d_size = query_l1d_cache_size();
+        return l1d_size;
+    }
+
+    /**
+     * query L2 cache size from the operating system
+     * @return size in bytes
+     */
+    [[nodiscard]] inline size_t query_l2_cache_size() {
         size_t l2_size = 262144;
 #if defined(__APPLE__)
         size_t size = sizeof(l2_size);
@@ -127,6 +145,15 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
             }
         }
 #endif
+        return l2_size;
+    }
+
+    /**
+     * get L2 cache size, queried once per process
+     * @return size in bytes
+     */
+    [[nodiscard]] inline size_t get_l2_cache_size() {
+        static const size_t l2_size = query_l2_cache_size();
         return l2_size;
     }
 
