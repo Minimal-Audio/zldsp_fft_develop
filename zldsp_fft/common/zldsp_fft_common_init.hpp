@@ -63,9 +63,9 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     /**
-     * byte alignment of caller-provided scratch: one cache line, which covers every supported vector width
+     * byte alignment of caller-provided scratch: the Highway alignment the kernels assume on every buffer
      */
-    inline constexpr size_t kScratchAlignment = 64;
+    inline constexpr size_t kScratchAlignment = HWY_ALIGNMENT;
 
     /**
      * round a scratch element count up to the scratch alignment
