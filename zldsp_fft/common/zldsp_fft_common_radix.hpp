@@ -38,7 +38,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     template <typename D, typename V>
     inline void transpose_4x4(D d, V v0, V v1, V v2, V v3, V& r0, V& r1, V& r2, V& r3) noexcept {
         static constexpr size_t lanes = hn::MaxLanes(d);
-        using T = hn::TFromD<D>;
+        static constexpr size_t vector_bytes = D{}.MaxBytes();
 
         const auto t0 = hn::InterleaveLower(d, v0, v1);
         const auto t1 = hn::InterleaveLower(d, v2, v3);
@@ -51,7 +51,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
             r2 = t2;
             r3 = t3;
         } else if constexpr (lanes == 4) {
-            if constexpr (sizeof(T) == 8) {
+            if constexpr (vector_bytes == 32) {
                 r0 = hn::ConcatLowerLower(d, t1, t0);
                 r1 = hn::ConcatLowerLower(d, t3, t2);
                 r2 = hn::ConcatUpperUpper(d, t1, t0);
@@ -485,7 +485,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     /**
-     * finish one of the streamed AVX2 radix-8 transposes
+     * finish one of the streamed 256-bit radix-8 transposes
      * @tparam D
      * @tparam F
      * @param d
@@ -504,14 +504,15 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                                            hn::Vec<D> t0, hn::Vec<D> t1, hn::Vec<D> t2, hn::Vec<D> t3,
                                            const size_t out_offset0, const size_t out_offset1,
                                            const size_t out_offset2, const size_t out_offset3) noexcept {
-        static constexpr size_t lanes = hn::MaxLanes(d);
-        if constexpr (lanes == 4 && sizeof(F) == 8) {
+        static constexpr size_t vector_bytes = D{}.MaxBytes();
+        static_assert(vector_bytes == 32, "radix-8 streamed transpose requires 256-bit vectors");
+        if constexpr (sizeof(F) == 8) {
             hn::Store(hn::ConcatLowerLower(d, t1, t0), d, out_shift + out_offset0);
             hn::Store(hn::ConcatUpperUpper(d, t1, t0), d, out_shift + out_offset2);
             hn::Store(hn::ConcatLowerLower(d, t3, t2), d, out_shift + out_offset1);
             hn::Store(hn::ConcatUpperUpper(d, t3, t2), d, out_shift + out_offset3);
         } else {
-            static_assert(lanes == 8 && sizeof(F) == 4);
+            static_assert(sizeof(F) == 4);
             hn::Repartition<uint64_t, D> d64;
             {
                 const auto m0 = hn::BitCast(d, hn::InterleaveLower(d64, hn::BitCast(d64, t0), hn::BitCast(d64, t1)));
@@ -600,7 +601,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     }
 
     /**
-     * perform an AVX2 radix-8 first pass using bounded scratch and streamed transposes
+     * perform a 256-bit radix-8 first pass using bounded scratch and streamed transposes
      * @tparam D
      * @tparam Load
      * @tparam F
@@ -715,6 +716,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
 
         static constexpr hn::ScalableTag<F> d;
         static constexpr size_t lanes = hn::MaxLanes(d);
+        static constexpr size_t vector_bytes = d.MaxBytes();
 
         const size_t eighth_n = n >> 3;
 
@@ -731,7 +733,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
 
         HWY_ASSUME(eighth_n >= lanes);
         HWY_ASSUME((eighth_n % lanes) == 0);
-        if constexpr (HWY_TARGET == HWY_AVX2) {
+        if constexpr (vector_bytes == 32) {
             for (size_t j = 0; j + lanes <= eighth_n; j += lanes) {
                 const Ptr in_shift = in.shift(Ptr::get_complex_offset(j));
                 auto load = [&](const size_t offset, auto& r, auto& i) {
@@ -813,7 +815,6 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
             }
 
             F* HWY_RESTRICT out_shift = out_aosoa + (j << 4);
-            static constexpr bool is_wide = (lanes > 4) || (sizeof(F) == 8 && lanes == 4);
             {
                 const auto il_00 = hn::InterleaveLower(d, hn::Add(y00_r, y10_r), hn::Sub(y00_r, y10_r));
                 const auto il_01 = hn::InterleaveLower(d, hn::Add(y01_r, y11_r), hn::Sub(y01_r, y11_r));
@@ -823,7 +824,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 hn::Vec<decltype(d)> r0, r1, r2, r3;
                 transpose_4x4(d, il_00, il_01, il_02, il_03, r0, r1, r2, r3);
 
-                if constexpr (is_wide) {
+                if constexpr (vector_bytes == 32) {
                     hn::Store(r0, d, out_shift);
                     hn::Store(r1, d, out_shift + 2 * lanes);
                     hn::Store(r2, d, out_shift + 8 * lanes);
@@ -845,7 +846,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 hn::Vec<decltype(d)> r0, r1, r2, r3;
                 transpose_4x4(d, iu_00, iu_01, iu_02, iu_03, r0, r1, r2, r3);
 
-                if constexpr (is_wide) {
+                if constexpr (vector_bytes == 32) {
                     hn::Store(r0, d, out_shift + 4 * lanes);
                     hn::Store(r1, d, out_shift + 6 * lanes);
                     hn::Store(r2, d, out_shift + 12 * lanes);
@@ -867,7 +868,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 hn::Vec<decltype(d)> i0, i1, i2, i3;
                 transpose_4x4(d, il_00, il_01, il_02, il_03, i0, i1, i2, i3);
 
-                if constexpr (is_wide) {
+                if constexpr (vector_bytes == 32) {
                     hn::Store(i0, d, out_shift + lanes);
                     hn::Store(i1, d, out_shift + 3 * lanes);
                     hn::Store(i2, d, out_shift + 9 * lanes);
@@ -889,7 +890,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 hn::Vec<decltype(d)> i0, i1, i2, i3;
                 transpose_4x4(d, iu_00, iu_01, iu_02, iu_03, i0, i1, i2, i3);
 
-                if constexpr (is_wide) {
+                if constexpr (vector_bytes == 32) {
                     hn::Store(i0, d, out_shift + 5 * lanes);
                     hn::Store(i1, d, out_shift + 7 * lanes);
                     hn::Store(i2, d, out_shift + 13 * lanes);
@@ -1355,6 +1356,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
 
         static constexpr hn::ScalableTag<F> d;
         static constexpr size_t lanes = hn::MaxLanes(d);
+        static constexpr size_t vector_bytes = d.MaxBytes();
 
         const size_t eighth_n = n >> 3;
 
@@ -1371,7 +1373,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
 
         HWY_ASSUME(eighth_n >= lanes);
         HWY_ASSUME((eighth_n % lanes) == 0);
-        if constexpr (HWY_TARGET == HWY_AVX2) {
+        if constexpr (vector_bytes == 32) {
             for (size_t j = 0; j + lanes <= eighth_n; j += lanes) {
                 const F* HWY_RESTRICT in_shift = in_aosoa + (j << 1);
                 auto load = [&](const size_t offset, auto& r, auto& i) {
@@ -1460,7 +1462,6 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 y13_i = v3_i;
             }
             F* HWY_RESTRICT out_shift = out_aosoa + (j << 4);
-            static constexpr bool is_wide = (lanes > 4) || (sizeof(F) == 8 && lanes == 4);
             {
                 const auto il_00 = hn::InterleaveLower(d, hn::Add(y00_r, y10_r), hn::Sub(y00_r, y10_r));
                 const auto il_01 = hn::InterleaveLower(d, hn::Add(y01_r, y11_r), hn::Sub(y01_r, y11_r));
@@ -1470,7 +1471,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 hn::Vec<decltype(d)> r0, r1, r2, r3;
                 transpose_4x4(d, il_00, il_01, il_02, il_03, r0, r1, r2, r3);
 
-                if constexpr (is_wide) {
+                if constexpr (vector_bytes == 32) {
                     hn::Store(r0, d, out_shift);
                     hn::Store(r1, d, out_shift + 2 * lanes);
                     hn::Store(r2, d, out_shift + 8 * lanes);
@@ -1491,7 +1492,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 hn::Vec<decltype(d)> r0, r1, r2, r3;
                 transpose_4x4(d, iu_00, iu_01, iu_02, iu_03, r0, r1, r2, r3);
 
-                if constexpr (is_wide) {
+                if constexpr (vector_bytes == 32) {
                     hn::Store(r0, d, out_shift + 4 * lanes);
                     hn::Store(r1, d, out_shift + 6 * lanes);
                     hn::Store(r2, d, out_shift + 12 * lanes);
@@ -1512,7 +1513,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 hn::Vec<decltype(d)> i0, i1, i2, i3;
                 transpose_4x4(d, il_00, il_01, il_02, il_03, i0, i1, i2, i3);
 
-                if constexpr (is_wide) {
+                if constexpr (vector_bytes == 32) {
                     hn::Store(i0, d, out_shift + lanes);
                     hn::Store(i1, d, out_shift + 3 * lanes);
                     hn::Store(i2, d, out_shift + 9 * lanes);
@@ -1533,7 +1534,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 hn::Vec<decltype(d)> i0, i1, i2, i3;
                 transpose_4x4(d, iu_00, iu_01, iu_02, iu_03, i0, i1, i2, i3);
 
-                if constexpr (is_wide) {
+                if constexpr (vector_bytes == 32) {
                     hn::Store(i0, d, out_shift + 5 * lanes);
                     hn::Store(i1, d, out_shift + 7 * lanes);
                     hn::Store(i2, d, out_shift + 13 * lanes);

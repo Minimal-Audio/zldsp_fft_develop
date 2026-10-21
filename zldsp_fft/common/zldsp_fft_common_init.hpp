@@ -278,16 +278,18 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     inline size_t init_cooley_tukey_cfft_state(const size_t order, const size_t num_stages,
                                                hwy::AlignedFreeUniquePtr<F[]>& w,
                                                std::vector<MacroTwiddleStage>& stages) {
-        static constexpr size_t lanes = hn::MaxLanes(hn::ScalableTag<F>());
+        static constexpr hn::ScalableTag<F> d;
+        static constexpr size_t lanes = hn::MaxLanes(d);
+        static constexpr size_t vector_bytes = d.MaxBytes();
         const size_t n = static_cast<size_t>(1) << order;
         stages.resize(num_stages);
         size_t tile_width = 0;
         size_t min_compact_order = 0;
-        if constexpr (HWY_TARGET == HWY_AVX2) {
+        if constexpr (vector_bytes == 32) {
             tile_width = get_macro_twiddle_tile_width<F>();
             min_compact_order = get_hybrid_order_thresholds<F>().second;
         }
-        // use compact AVX2 tables for nodes at or above the hybrid switching order
+        // use compact 256-bit tables for nodes at or above the hybrid switching order
         {
             for (size_t i = 0; i < num_stages; ++i) {
                 const size_t sub_n = n >> (2 * i);
@@ -295,7 +297,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 const size_t num_blocks = std::max<size_t>(1, width / lanes);
                 auto& stage = stages[i];
                 stage = {num_blocks * 6 * lanes, 0};
-                if constexpr (HWY_TARGET == HWY_AVX2) {
+                if constexpr (vector_bytes == 32) {
                     if (order - 2 * i >= min_compact_order) {
                         const size_t stage_tile_width = std::min(tile_width, width);
                         const size_t coarse_scalars = 6 * (width / stage_tile_width);

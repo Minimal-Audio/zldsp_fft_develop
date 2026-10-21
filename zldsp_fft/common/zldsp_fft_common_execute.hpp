@@ -484,9 +484,10 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
      */
     template <bool is_forward, typename F, typename InPtr>
     HWY_INLINE void execute_hybrid_macro(const CFFTState<F>& state, InPtr in) noexcept {
+        static constexpr size_t vector_bytes = hn::ScalableTag<F>{}.MaxBytes();
         F* HWY_RESTRICT macro_workspace = state.workspace.get();
         const F* HWY_RESTRICT w = state.macro_w.get();
-        if constexpr (HWY_TARGET == HWY_AVX2) {
+        if constexpr (vector_bytes == 32) {
             common::radix4_first_pass_dif_compact_aosoa<is_forward>(
                 in, macro_workspace, state.cfft_size, w, state.macro_stages[0].tile_width, state.macro_w_tile.get());
         } else {
@@ -497,7 +498,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
         const size_t remaining_stages = state.num_macro_stages - 1;
         if (remaining_stages != 0) {
             const size_t width = state.cfft_size >> 4;
-            if constexpr (HWY_TARGET == HWY_AVX2) {
+            if constexpr (vector_bytes == 32) {
                 common::radix4_dif_compact_aosoa_depth_first(macro_workspace,
                                                              state.cfft_size, width, remaining_stages,
                                                              w, state.macro_stages.data() + 1, state.macro_w_tile.get());

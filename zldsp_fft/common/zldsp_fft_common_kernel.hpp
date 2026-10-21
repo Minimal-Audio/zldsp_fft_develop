@@ -304,6 +304,7 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
     inline void execute_cfft_order_5(InPtr in, OutPtr out, const F* w_r, const F* w_i) noexcept {
         static constexpr hn::ScalableTag<F> d;
         static constexpr size_t lanes = hn::MaxLanes(d);
+        static constexpr size_t vector_bytes = d.MaxBytes();
         static constexpr F kInvSqrt2 = static_cast<F>(1.0 / std::numbers::sqrt2);
 
         HWY_ALIGN F tmp_r[32];
@@ -564,8 +565,8 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
                 }
             }
 
-            static constexpr size_t kOffset1 = (sizeof(F) == 8 && lanes == 4) ? 16 : 8;
-            static constexpr size_t kOffset2 = (sizeof(F) == 8 && lanes == 4) ? 8 : 16;
+            static constexpr size_t kOffset1 = (vector_bytes == 32) ? 16 : 8;
+            static constexpr size_t kOffset2 = (vector_bytes == 32) ? 8 : 16;
 
             for (size_t k = 0; k < 8; k += lanes) {
                 const auto i1 = hn::Load(d, tmp_i + kOffset1 + k), r1 = hn::Load(d, tmp_r + kOffset1 + k);
