@@ -55,6 +55,10 @@ namespace zldsp::fft::HWY_NAMESPACE::common {
 
     template <typename T>
     [[nodiscard]] inline hwy::AlignedFreeUniquePtr<T[]> allocate_aligned(const size_t count) {
+        // Highway aborts on an empty allocation
+        if (count == 0) {
+            return nullptr;
+        }
         auto ptr = hwy::AllocateAligned<T>(count);
         if (!ptr) {
             throw std::bad_alloc{};

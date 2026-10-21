@@ -179,10 +179,8 @@ namespace zldsp::fft::HWY_NAMESPACE {
         hwy::AlignedFreeUniquePtr<F[]> scratch_;
 
     public:
-        explicit CFFT(const size_t cfft_order) : plan_(cfft_order) {
-            if (plan_.get_scratch_size() != 0) {
-                scratch_ = common::allocate_aligned<F>(plan_.get_scratch_size());
-            }
+        explicit CFFT(const size_t cfft_order)
+            : plan_(cfft_order), scratch_(common::allocate_aligned<F>(plan_.get_scratch_size())) {
         }
 
         [[nodiscard]] size_t get_size() const noexcept {
