@@ -110,6 +110,19 @@ Compile this target for the oldest supported baseline (e.g. `-march=x86-64` for 
 
 See [`wrapper`](examples/dynamic_dispatch_wrapper.cpp), [`interface`](examples/dynamic_dispatch_wrapper.hpp), and [`dynamic_dispatch_caller`](examples/dynamic_dispatch_caller.cpp) for complete examples.
 
+### Shared Plans and Caller-provided Scratch
+
+`CFFT` and `RFFT` own the buffers a transform writes to, so one instance transforms on one thread at a time. `CFFTPlan` and `RFFTPlan` hold only the read-only part (twiddles and stage tables): every method is `const`, and any number of threads can transform with one plan at once, each passing its own scratch.
+
+```cpp
+const zldsp::fft::RFFTPlan<float> plan(order);
+// plan.get_scratch_size() elements, aligned to RFFTPlan<float>::kScratchAlignment bytes
+std::span<float> scratch = ...;
+plan.forward(input, output, scratch);
+```
+
+The scratch can live anywhere, including the stack. Its size depends on the SIMD target and on cache sizes read at run time, so always ask the plan for it. The plans take the same layouts as `CFFT` and `RFFT`, and produce bit-identical results. See [`static_dispatch_caller`](examples/static_dispatch_caller.cpp) for an example with one plan shared by several threads.
+
 ## License
 
 zldsp_fft is licensed under the Apache-2.0 license ([LICENSE.md](LICENSE.md)).

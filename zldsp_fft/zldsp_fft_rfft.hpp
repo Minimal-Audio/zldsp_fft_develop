@@ -7,6 +7,14 @@
 #include "zldsp_fft_rfft-inl.hpp"
 
 namespace zldsp::fft {
+    /**
+     * read-only RFFT plan: every method is const and can run on any number of threads at once,
+     * each transform writing only to its in/out buffers and the scratch it is given;
+     * RFFT is the same plan with its own scratch, for the scratch-free API
+     */
+    template <typename F>
+    using RFFTPlan = HWY_STATIC_NAMESPACE::RFFTPlan<F>;
+
     template <typename F>
     class RFFT {
         using Complex = std::complex<F>;
